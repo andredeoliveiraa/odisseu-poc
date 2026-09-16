@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QMessageBox
 
-from app.hull_generator import HullGenerator
 from app.models.constraints import HullConstraintValidator
 
 
@@ -19,35 +19,51 @@ class HullController(QObject):
         self.viewer = viewer
         self.parameter_view = parameter_view
         self.validator = HullConstraintValidator()
-        self.generator = HullGenerator()
+        self.generator = None
         self.parameter_view.draw_requested.connect(self.draw)
+
+    def _dialog_parent(self):
+        """Usa a janela principal como pai, e não o painel lateral.
+
+        Um diálogo parentado no painel é centralizado sobre ele, o que em
+        ambiente de dois monitores pode abri-lo fora da janela do aplicativo.
+        """
+        return self.parameter_view.window()
 
     def draw(self) -> None:
         """Lê o formulário, valida restrições e redesenha o casco."""
+        if not self.parameter_view.is_parametric_enabled():
+            return
+
+        self.parameter_view.set_busy(True)
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
         try:
-            self.generator = HullGenerator(
-                total_length=self.parameter_view.total_length.value(),
-                midship_length=self.parameter_view.midship_length.value(),
-                beam=self.parameter_view.beam.value(),
-                draft=self.parameter_view.draft.value(),
-                bow_angle=self.parameter_view.bow_angle.value(),
-                station_concavity=self.parameter_view.concavity.value(),
-            )
-            result = self.validator.validate(
-                self.generator,
-                self.parameter_view.concavity.value(),
-                self.parameter_view.minimum_radius.value(),
-            )
-        except ValueError as error:
-            QMessageBox.warning(self.parameter_view, "Parâmetros inválidos", str(error))
-            return
+            try:
+                generator = self.parameter_view.current_generator()
+                result = self.validator.validate(
+                    generator,
+                    self.parameter_view.concavity.value(),
+                    self.parameter_view.minimum_radius.value(),
+                )
+            except ValueError as error:
+                QMessageBox.warning(
+                    self._dialog_parent(), "Parâmetros inválidos", str(error)
+                )
+                return
 
-        if not result.valid:
-            QMessageBox.warning(self.parameter_view, "Curvatura inválida", result.message)
-            return
+            if not result.valid:
+                QMessageBox.warning(
+                    self._dialog_parent(), "Curvatura inválida", result.message
+                )
+                return
 
-        self.viewer.set_hull(self.generator.generate_mesh())
-        self.viewer.reset_camera()
-        self.viewer.render()
+            self.generator = generator
+            self.viewer.set_hull(generator.generate_mesh())
+            self.viewer.fit_view()
+        finally:
+            QGuiApplication.restoreOverrideCursor()
+            self.parameter_view.set_busy(False)
+
+        self.parameter_view.mark_synced()
         self.hull_generated.emit()
         self.viewer.status_message.emit("Casco recalculado com sucesso")

@@ -63,6 +63,27 @@ QDoubleSpinBox {
 QDoubleSpinBox:focus {
     border-color: #4ea5d9;
 }
+QDoubleSpinBox[state="error"] {
+    border-color: #ff8b86;
+    background-color: #2d2022;
+}
+QComboBox {
+    background-color: #20262d;
+    border: 1px solid #3b4652;
+    border-radius: 5px;
+    padding: 5px 9px;
+}
+QComboBox:hover {
+    border-color: #4b5766;
+}
+QComboBox:focus {
+    border-color: #4ea5d9;
+}
+QComboBox QAbstractItemView {
+    background-color: #20262d;
+    border: 1px solid #3b4652;
+    selection-background-color: #27313b;
+}
 QPushButton {
     background-color: #27313b;
     border: 1px solid #3b4652;
@@ -110,6 +131,12 @@ QLabel[state="valid"] {
 }
 QLabel[state="error"] {
     color: #ff8b86;
+}
+QLabel[state="warning"] {
+    color: #e8c07d;
+}
+QLabel:disabled {
+    color: #6f7b86;
 }
 QStatusBar {
     border-top: 1px solid #303943;

@@ -31,23 +31,38 @@ class HullViewer(QtInteractor):
 
     status_message = Signal(str)
 
+    #: Nome do ator usado para o modelo exibido no momento.
+    ACTOR_NAME = "current-hull"
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._current_mesh: pv.DataSet | None = None
         self.set_background("#20252b")
-        self._add_sample_geometry()
+        self._build_initial_scene()
 
-    def _add_sample_geometry(self) -> None:
-        """Adiciona um casco paramétrico inicial para validar a renderização."""
+    def _build_initial_scene(self) -> None:
+        """Monta a cena inicial com o casco padrão e os eixos cotados."""
         self.set_hull(HullGenerator().generate_mesh())
         self.add_axes()
+        self._show_measurement_grid()
+        self.reset_view()
+
+    def _show_measurement_grid(self) -> None:
+        """Desenha a grade cotada com rótulos legíveis sobre o fundo escuro."""
         self.show_grid(
-            xtitle="Comprimento",
-            ytitle="Boca",
-            ztitle="Calado",
-            color="#8b949e",
+            xtitle="Comprimento (m)",
+            ytitle="Boca (m)",
+            ztitle="Calado (m)",
+            color="#c7d2dd",
+            font_size=11,
+            font_family="arial",
+            n_xlabels=4,
+            n_ylabels=4,
+            n_zlabels=4,
+            fmt="%.1f",
+            padding=0.08,
+            use_3d_text=False,
         )
-        self.reset_camera()
 
     def set_hull(self, generated_mesh: HullMesh) -> None:
         """Substitui a malha exibida pelo resultado do gerador."""
@@ -61,8 +76,7 @@ class HullViewer(QtInteractor):
         if int(getattr(mesh, "n_points", 0)) == 0:
             raise ValueError("O arquivo não contém pontos que possam ser exibidos.")
 
-        self.remove_actor("current-hull", reset_camera=False)
-        self.remove_actor("sample-hull", reset_camera=False)
+        self.remove_actor(self.ACTOR_NAME, reset_camera=False)
         self._current_mesh = mesh.copy(deep=True)
         self.add_mesh(
             self._current_mesh,
@@ -70,7 +84,7 @@ class HullViewer(QtInteractor):
             show_edges=True,
             edge_color="#dcebf5",
             line_width=1,
-            name="current-hull",
+            name=self.ACTOR_NAME,
             smooth_shading=False,
         )
 
@@ -115,6 +129,17 @@ class HullViewer(QtInteractor):
             raise ValueError("Não existe um modelo para editar.")
         return tuple(float(value) for value in self._current_mesh.center)
 
+    def reset_view(self) -> None:
+        """Devolve a câmera à orientação isométrica inicial."""
+        self.view_isometric()
+        self.reset_camera()
+        self.render()
+
+    def fit_view(self) -> None:
+        """Enquadra o modelo preservando a orientação escolhida pelo usuário."""
+        self.reset_camera()
+        self.render()
+
     def _surface_mesh(self) -> pv.PolyData:
         """Converte o objeto atual em superfície adequada para exportação."""
         if self._current_mesh is None:
@@ -122,9 +147,3 @@ class HullViewer(QtInteractor):
         if isinstance(self._current_mesh, pv.PolyData):
             return self._current_mesh.copy(deep=True)
         return self._current_mesh.extract_surface()
-
-    def clear_model(self) -> None:
-        """Remove a geometria carregada, preservando a cena de visualização."""
-        self.remove_actor("current-hull")
-        self.remove_actor("sample-hull")
-        self._current_mesh = None
