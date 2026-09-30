@@ -37,7 +37,8 @@ class HullGenerator:
         draft: float = 1.8,
         bow_angle: float = 32.0,
         station_concavity: float = 0.0,
-        stations: int = 32,
+        stations: int = 64,
+        section_points: int = 33,
     ) -> None:
         """Inicializa os parâmetros dimensionais do casco.
 
@@ -47,6 +48,9 @@ class HullGenerator:
             beam: Boca máxima, medida entre as bordas livres.
             draft: Calado, medido da quilha à linha d'água.
             stations: Quantidade de seções longitudinais da malha.
+            section_points: Pontos em cada seção transversal, da borda livre
+                de um bordo à do outro. Deve ser ímpar para haver um ponto
+                exatamente sobre a quilha.
         """
         self.total_length = float(total_length)
         self.midship_length = float(midship_length)
@@ -55,6 +59,7 @@ class HullGenerator:
         self.bow_angle = float(bow_angle)
         self.station_concavity = float(station_concavity)
         self.stations = int(stations)
+        self.section_points = int(section_points)
         self._validate_parameters()
 
     def _validate_parameters(self) -> None:
@@ -70,6 +75,14 @@ class HullGenerator:
             raise ValueError("station_concavity deve estar entre 0 e 1.")
         if self.stations < 4:
             raise ValueError("São necessárias pelo menos 4 estações.")
+        if self.stations > 512:
+            raise ValueError("São permitidas no máximo 512 estações.")
+        if not 5 <= self.section_points <= 257:
+            raise ValueError("Os pontos por seção devem estar entre 5 e 257.")
+        if self.section_points % 2 == 0:
+            raise ValueError(
+                "Os pontos por seção devem ser ímpares para incluir a quilha."
+            )
 
     def _longitudinal_fullness(self, parameter: np.ndarray) -> np.ndarray:
         """Calcula a redução suave da seção em direção à proa e à popa."""
@@ -87,38 +100,50 @@ class HullGenerator:
             3.0 - 2.0 * np.clip(normalized**sharpness, 0.0, 1.0)
         )
 
+    def _station_parameters(self) -> np.ndarray:
+        """Distribui as estações conforme a variação da forma.
+
+        Metade das estações segue um espaçamento uniforme; a outra metade é
+        distribuída proporcionalmente à variação da plenitude. Assim, as
+        regiões de transição entre a seção média e as extremidades recebem
+        mais seções, e a região de seção constante recebe menos.
+        """
+        dense = np.linspace(0.0, 1.0, 4001)
+        change = np.concatenate(
+            ([0.0], np.cumsum(np.abs(np.diff(self._longitudinal_fullness(dense)))))
+        )
+        if change[-1] > 0:
+            change /= change[-1]
+        else:
+            change = dense
+        measure = 0.5 * (dense + change)
+        return np.interp(np.linspace(0.0, 1.0, self.stations), measure, dense)
+
     def generate_mesh(self) -> HullMesh:
         """Calcula vértices e faces quadrilaterais da superfície do casco."""
-        longitudinal = np.linspace(0.0, 1.0, self.stations)
+        longitudinal = self._station_parameters()
         fullness = self._longitudinal_fullness(longitudinal)
         half_beam = self.beam / 2
 
-        # Cinco pontos por seção: borda livre/chine/quilha/chine/borda livre.
-        # A interpolação cúbica no eixo transversal deixa a superfície contínua.
-        section_parameter = np.linspace(-1.0, 1.0, 5)
-        vertices = np.empty((self.stations * 5, 3), dtype=np.float64)
-        for index, (station, scale) in enumerate(zip(longitudinal, fullness)):
-            x = (station - 0.5) * self.total_length
-            transverse = section_parameter * half_beam * scale
-            vertical = -self.draft * (
-                1.0 - np.abs(section_parameter) ** (1.35 + self.station_concavity)
-            ) * (0.75 + 0.25 * scale)
-            vertices[index * 5 : (index + 1) * 5] = np.column_stack(
-                (np.full(5, x), transverse, vertical)
+        # Cada seção vai da borda livre de bombordo à de boreste passando pela
+        # quilha; a reflexão em relação ao plano central é implícita em s.
+        section_parameter = np.linspace(-1.0, 1.0, self.section_points)
+        x = np.repeat((longitudinal - 0.5) * self.total_length, self.section_points)
+        transverse = np.outer(fullness, section_parameter) * half_beam
+        profile = 1.0 - np.abs(section_parameter) ** (1.35 + self.station_concavity)
+        vertical = -self.draft * np.outer(0.75 + 0.25 * fullness, profile)
+        vertices = np.column_stack((x, transverse.ravel(), vertical.ravel()))
+
+        rows = np.arange(self.stations - 1)[:, None] * self.section_points
+        columns = np.arange(self.section_points - 1)[None, :]
+        first = (rows + columns).ravel()
+        faces = np.column_stack(
+            (
+                first,
+                first + 1,
+                first + self.section_points + 1,
+                first + self.section_points,
             )
+        ).astype(np.int64)
 
-        faces = []
-        for station in range(self.stations - 1):
-            row = station * 5
-            next_row = (station + 1) * 5
-            for section_point in range(4):
-                faces.append(
-                    (
-                        row + section_point,
-                        row + section_point + 1,
-                        next_row + section_point + 1,
-                        next_row + section_point,
-                    )
-                )
-
-        return HullMesh(vertices=vertices, faces=np.asarray(faces, dtype=np.int64))
+        return HullMesh(vertices=vertices.astype(np.float64), faces=faces)

@@ -32,6 +32,8 @@ class HullController(QObject):
                 draft=self.parameter_view.draft.value(),
                 bow_angle=self.parameter_view.bow_angle.value(),
                 station_concavity=self.parameter_view.concavity.value(),
+                stations=self.parameter_view.stations.value(),
+                section_points=self.parameter_view.section_points.value(),
             )
             result = self.validator.validate(
                 self.generator,

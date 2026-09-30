@@ -53,14 +53,14 @@ QGroupBox::title {
     left: 10px;
     padding: 0 5px;
 }
-QDoubleSpinBox {
+QDoubleSpinBox, QSpinBox {
     background-color: #20262d;
     border: 1px solid #3b4652;
     border-radius: 5px;
     padding: 4px 7px;
     selection-background-color: #2379b5;
 }
-QDoubleSpinBox:focus {
+QDoubleSpinBox:focus, QSpinBox:focus {
     border-color: #4ea5d9;
 }
 QPushButton {
@@ -75,7 +75,7 @@ QPushButton:hover {
 QPushButton:pressed {
     background-color: #202830;
 }
-QPushButton:disabled, QDoubleSpinBox:disabled {
+QPushButton:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled {
     color: #6f7b86;
     background-color: #1d2228;
 }
@@ -110,6 +110,15 @@ QLabel[state="valid"] {
 }
 QLabel[state="error"] {
     color: #ff8b86;
+}
+QProgressBar {
+    background-color: #20262d;
+    border: 1px solid #35404b;
+    border-radius: 4px;
+}
+QProgressBar::chunk {
+    background-color: #4ea5d9;
+    border-radius: 3px;
 }
 QStatusBar {
     border-top: 1px solid #303943;

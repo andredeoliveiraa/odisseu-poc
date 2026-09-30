@@ -16,8 +16,8 @@ class HullGeneratorTests(unittest.TestCase):
         generator = HullGenerator()
         mesh = generator.generate_mesh()
 
-        self.assertEqual(mesh.vertices.shape, (32 * 5, 3))
-        self.assertEqual(mesh.faces.shape, ((32 - 1) * 4, 4))
+        self.assertEqual(mesh.vertices.shape, (64 * 33, 3))
+        self.assertEqual(mesh.faces.shape, ((64 - 1) * 32, 4))
         self.assertGreaterEqual(int(mesh.faces.min()), 0)
         self.assertLess(int(mesh.faces.max()), len(mesh.vertices))
 
@@ -37,6 +37,42 @@ class HullGeneratorTests(unittest.TestCase):
             HullGenerator(beam=0.0)
         with self.assertRaises(ValueError):
             HullGenerator(station_concavity=1.1)
+        with self.assertRaises(ValueError):
+            HullGenerator(stations=513)
+        with self.assertRaises(ValueError):
+            HullGenerator(section_points=32)
+        with self.assertRaises(ValueError):
+            HullGenerator(section_points=3)
+
+    def test_longitudinal_resolution_can_be_changed(self) -> None:
+        mesh = HullGenerator(stations=12, section_points=5).generate_mesh()
+
+        self.assertEqual(mesh.vertices.shape, (12 * 5, 3))
+        self.assertEqual(mesh.faces.shape, ((12 - 1) * 4, 4))
+
+    def test_sections_follow_the_analytic_curve(self) -> None:
+        coarse = HullGenerator(section_points=5).generate_mesh().vertices
+        fine = HullGenerator(section_points=33).generate_mesh().vertices
+        midship = 32
+
+        # O ponto a 1/4 da boca existe nas duas malhas e deve coincidir.
+        np.testing.assert_allclose(coarse[midship * 5 + 1], fine[midship * 33 + 8])
+        # A malha fina segue a curva entre esses pontos em vez de uma reta.
+        coarse_chord = 0.5 * (coarse[midship * 5 + 1, 2] + coarse[midship * 5 + 2, 2])
+        self.assertLess(fine[midship * 33 + 12, 2], coarse_chord)
+
+    def test_stations_concentrate_where_the_shape_changes(self) -> None:
+        generator = HullGenerator(stations=64)
+        x = generator.generate_mesh().vertices[::33, 0]
+        spacing = np.diff(x)
+        adaptive = generator._station_parameters()
+        uniform = np.linspace(0.0, 1.0, 64)
+
+        np.testing.assert_allclose(spacing, spacing[::-1], atol=1e-9)
+        self.assertLess(
+            np.abs(np.diff(generator._longitudinal_fullness(adaptive))).max(),
+            0.6 * np.abs(np.diff(generator._longitudinal_fullness(uniform))).max(),
+        )
 
 
 class HullConstraintValidatorTests(unittest.TestCase):

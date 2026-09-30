@@ -10,10 +10,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from app.models.attributes import HullDesign
 from app.models.transforms import TransformParameters
 from app.models.profiles import HullProfile
 
@@ -23,6 +25,7 @@ class ParameterPanel(QWidget):
 
     draw_requested = Signal()
     transform_requested = Signal(object)
+    parameters_changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -76,7 +79,7 @@ class ParameterPanel(QWidget):
         layout.addWidget(self.transform_group)
         layout.addStretch()
 
-        for field in self._parameter_fields():
+        for field in (*self._parameter_fields(), self.section_points):
             field.valueChanged.connect(self._validate_inputs)
         self._validate_inputs()
 
@@ -110,6 +113,18 @@ class ParameterPanel(QWidget):
         self.beam = self._spin_box(4.0, 0.1, 1000.0)
         self.draft = self._spin_box(1.8, 0.1, 1000.0)
         self.bow_angle = self._spin_box(32.0, 1.0, 89.0)
+        self.stations = QSpinBox()
+        self.stations.setRange(4, 512)
+        self.stations.setValue(64)
+        self.stations.setSingleStep(4)
+        self.stations.setAccelerated(True)
+        self.stations.setMinimumHeight(32)
+        self.section_points = QSpinBox()
+        self.section_points.setRange(5, 257)
+        self.section_points.setValue(33)
+        self.section_points.setSingleStep(2)
+        self.section_points.setAccelerated(True)
+        self.section_points.setMinimumHeight(32)
         for field in (
             self.total_length,
             self.midship_length,
@@ -123,11 +138,20 @@ class ParameterPanel(QWidget):
         self.draft.setToolTip("Distância vertical entre a linha d'água e a quilha.")
         self.bow_angle.setSuffix("°")
         self.bow_angle.setToolTip("Ângulo de entrada da proa; valores menores deixam a proa mais afiada.")
+        self.stations.setToolTip(
+            "Quantidade de seções ao longo do comprimento. Mais linhas aumentam a suavidade e o custo de geração."
+        )
+        self.section_points.setToolTip(
+            "Pontos em cada seção transversal, de borda livre a borda livre. "
+            "Use valores ímpares para manter um ponto sobre a quilha."
+        )
         form.addRow("Comprimento total", self.total_length)
         form.addRow("Seção média", self.midship_length)
         form.addRow("Boca", self.beam)
         form.addRow("Calado", self.draft)
         form.addRow("Ângulo de proa", self.bow_angle)
+        form.addRow("Linhas longitudinais", self.stations)
+        form.addRow("Pontos por seção", self.section_points)
         return group
 
     def _create_group_2(self) -> QGroupBox:
@@ -221,20 +245,27 @@ class ParameterPanel(QWidget):
             field.setValue(0.0)
         self.uniform_scale.setValue(1.0)
 
-    def _parameter_fields(self) -> tuple[QDoubleSpinBox, ...]:
+    def _parameter_fields(self) -> tuple[QDoubleSpinBox | QSpinBox, ...]:
         return (
             self.total_length,
             self.midship_length,
             self.beam,
             self.draft,
             self.bow_angle,
+            self.stations,
             self.concavity,
             self.minimum_radius,
         )
 
     def _validate_inputs(self, _value: float | None = None) -> bool:
         """Oferece feedback imediato sobre relações entre os parâmetros."""
-        if self.midship_length.value() > self.total_length.value():
+        if self.section_points.value() % 2 == 0:
+            self.validation_label.setText(
+                "Use um número ímpar de pontos por seção para incluir a quilha."
+            )
+            self.validation_label.setProperty("state", "error")
+            valid = False
+        elif self.midship_length.value() > self.total_length.value():
             self.validation_label.setText(
                 "A seção média não pode ser maior que o comprimento total."
             )
@@ -259,16 +290,32 @@ class ParameterPanel(QWidget):
         self.validation_label.style().unpolish(self.validation_label)
         self.validation_label.style().polish(self.validation_label)
         self.draw_button.setEnabled(valid and self._parametric_enabled)
+        self.parameters_changed.emit()
         return valid
+
+    def current_design(self) -> HullDesign:
+        """Retorna as variáveis de projeto digitadas no formulário."""
+        return HullDesign(
+            total_length=self.total_length.value(),
+            midship_length=self.midship_length.value(),
+            beam=self.beam.value(),
+            draft=self.draft.value(),
+            bow_angle=self.bow_angle.value(),
+            concavity=self.concavity.value(),
+        )
+
+    def is_parametric_enabled(self) -> bool:
+        return self._parametric_enabled
 
     def reset_defaults(self) -> None:
         """Restaura o conjunto inicial de parâmetros do casco."""
-        defaults = (12.0, 6.0, 4.0, 1.8, 32.0, 0.0, 2.0)
+        defaults = (12.0, 6.0, 4.0, 1.8, 32.0, 64, 0.0, 2.0)
         for field, value in zip(self._parameter_fields(), defaults):
             field.setValue(value)
+        self.section_points.setValue(33)
         self._validate_inputs()
 
-    def set_profile_values(self, profile: HullProfile) -> None:
+    def set_profile_values(self, profile: HullProfile, stations: int = 64) -> None:
         """Carrega um preset sem bloquear a edição manual dos campos."""
         values = (
             profile.total_length,
@@ -276,6 +323,7 @@ class ParameterPanel(QWidget):
             profile.beam,
             profile.draft,
             profile.bow_angle,
+            stations,
             profile.concavity,
             profile.minimum_radius,
         )

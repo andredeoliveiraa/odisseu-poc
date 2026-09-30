@@ -71,7 +71,7 @@ class HullViewer(QtInteractor):
             edge_color="#dcebf5",
             line_width=1,
             name="current-hull",
-            smooth_shading=False,
+            smooth_shading=True,
         )
 
     def load_mesh(self, file_path: str | Path) -> None:
