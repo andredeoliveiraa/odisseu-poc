@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from app.hull_generator import HullGenerator
+from app.models.attributes import HullDesign
 from app.models.constraints import HullConstraintValidator
 from app.models.transforms import TransformParameters
 from app.models.profiles import DEFAULT_PROFILE, HullProfile
@@ -42,6 +45,19 @@ class RangedSpinBox(QDoubleSpinBox):
         )
 
 
+class RangedIntSpinBox(QSpinBox):
+    """Versão inteira de :class:`RangedSpinBox`, com o mesmo aviso de recusa."""
+
+    input_rejected = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.lineEdit().inputRejected.connect(self.input_rejected)
+
+    def range_description(self) -> str:
+        return f"{self.minimum()}{self.suffix()} a {self.maximum()}{self.suffix()}"
+
+
 class ParameterPanel(QWidget):
     """Formulário dos parâmetros dos Grupos 1 e 2."""
 
@@ -66,7 +82,7 @@ class ParameterPanel(QWidget):
         self._rejection_timer.setSingleShot(True)
         self._rejection_timer.setInterval(self.REJECTION_FEEDBACK_MS)
         self._rejection_timer.timeout.connect(self._clear_rejection_feedback)
-        self._rejected_field: RangedSpinBox | None = None
+        self._rejected_field: RangedSpinBox | RangedIntSpinBox | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -85,8 +101,10 @@ class ParameterPanel(QWidget):
 
         layout.addWidget(self._create_model_group())
         self.dimension_group = self._create_group_1()
+        self.shape_group = self._create_shape_group()
         self.constraint_group = self._create_group_2()
         layout.addWidget(self.dimension_group)
+        layout.addWidget(self.shape_group)
         layout.addWidget(self.constraint_group)
 
         self.validation_label = QLabel()
@@ -126,7 +144,7 @@ class ParameterPanel(QWidget):
         layout.addWidget(self.transform_group)
         layout.addStretch()
 
-        for field in self._parameter_fields():
+        for field in (*self._parameter_fields(), self.section_points):
             field.valueChanged.connect(self._on_parameter_edited)
             field.input_rejected.connect(self._on_input_rejected)
             field.lineEdit().returnPressed.connect(self._request_draw)
@@ -215,6 +233,24 @@ class ParameterPanel(QWidget):
         field.setKeyboardTracking(False)
         return field
 
+    def _int_spin_box(
+        self,
+        value: int,
+        minimum: int,
+        maximum: int,
+        step: int = 1,
+        suffix: str = "",
+    ) -> RangedIntSpinBox:
+        field = RangedIntSpinBox()
+        field.setRange(minimum, maximum)
+        field.setSuffix(suffix)
+        field.setValue(value)
+        field.setSingleStep(step)
+        field.setAccelerated(True)
+        field.setMinimumHeight(32)
+        field.setKeyboardTracking(False)
+        return field
+
     def _create_group_1(self) -> CollapsibleSection:
         section = CollapsibleSection("Grupo 1 - Dimensões", self, expanded=True)
         form = QFormLayout()
@@ -225,6 +261,8 @@ class ParameterPanel(QWidget):
         self.beam = self._spin_box(profile.beam, 0.1, 1000.0, " m")
         self.draft = self._spin_box(profile.draft, 0.1, 1000.0, " m")
         self.bow_angle = self._spin_box(profile.bow_angle, 1.0, 89.0, "°")
+        self.stations = self._int_spin_box(64, 4, 512, step=4)
+        self.section_points = self._int_spin_box(33, 5, 257, step=2)
 
         self._add_row(
             form,
@@ -260,8 +298,68 @@ class ParameterPanel(QWidget):
             "Afilamento da entrada de proa; valores menores deixam a proa mais "
             f"afiada. Não altera a popa. Intervalo: {self.bow_angle.range_description()}.",
         )
+        self._add_row(
+            form,
+            "Linhas longitudinais",
+            self.stations,
+            "Quantidade de seções ao longo do comprimento. Mais linhas aumentam "
+            f"a suavidade e o custo de geração. Intervalo: {self.stations.range_description()}.",
+        )
+        self._add_row(
+            form,
+            "Pontos por seção",
+            self.section_points,
+            "Pontos em cada seção transversal, de borda livre a borda livre. "
+            "Use valores ímpares para manter um ponto sobre a quilha. "
+            f"Intervalo: {self.section_points.range_description()}.",
+        )
         section.add_layout(form)
         return section
+
+    def _create_shape_group(self) -> CollapsibleSection:
+        section = CollapsibleSection("Forma do casco", self, expanded=True)
+        form = QFormLayout()
+        self._configure_form(form)
+        profile = DEFAULT_PROFILE
+        self.freeboard = self._spin_box(profile.freeboard, 0.1, 100.0, " m")
+        self.transom_ratio = self._spin_box(profile.transom_ratio, 0.0, 0.95)
+        self.transom_ratio.setSingleStep(0.05)
+        self.deadrise = self._spin_box(profile.deadrise, 0.0, 35.0, "°")
+
+        self._add_row(
+            form,
+            "Borda livre",
+            self.freeboard,
+            "Altura do convés acima da linha d'água. "
+            f"Intervalo: {self.freeboard.range_description()}.",
+        )
+        self._add_row(
+            form,
+            "Espelho de popa",
+            self.transom_ratio,
+            "Largura do espelho de popa como fração da boca. Zero gera popa em ponta.",
+        )
+        self._add_row(
+            form,
+            "Pé de caverna",
+            self.deadrise,
+            "Ângulo do fundo junto à quilha. Valores maiores formam um fundo em V.",
+        )
+        self.closed_deck = QCheckBox("Fechar convés")
+        self.closed_deck.setToolTip(
+            "Fecha o topo do casco. Marque para exportar uma malha estanque, "
+            "necessária para calcular volume, CFD ou impressão 3D."
+        )
+        self.closed_deck.setAccessibleName("Fechar convés")
+        # É uma opção de acabamento: redesenha na hora, sem pedir atualização.
+        self.closed_deck.toggled.connect(self._on_closed_deck_toggled)
+        form.addRow(self.closed_deck)
+        section.add_layout(form)
+        return section
+
+    def _on_closed_deck_toggled(self, _checked: bool) -> None:
+        if self._parametric_enabled and self._validate_inputs():
+            self.draw_requested.emit()
 
     def _create_group_2(self) -> CollapsibleSection:
         section = CollapsibleSection("Grupo 2 - Restrições", self, expanded=True)
@@ -283,8 +381,7 @@ class ParameterPanel(QWidget):
             form,
             "Raio mínimo",
             self.minimum_radius,
-            "Raio de curvatura da quilha na seção mestra. Valores maiores "
-            "achatam o fundo; valores menores deixam a quilha mais viva.",
+            "Limite usado para validar a curvatura atual na seção mestra.",
         )
         section.add_layout(form)
         return section
@@ -406,16 +503,32 @@ class ParameterPanel(QWidget):
     # ------------------------------------------------------------------
     # Validação e estado
     # ------------------------------------------------------------------
-    def _parameter_fields(self) -> tuple[RangedSpinBox, ...]:
+    def _parameter_fields(self) -> tuple[RangedSpinBox | RangedIntSpinBox, ...]:
+        """Campos que participam de um preset, na ordem de ``HullProfile.values``.
+
+        ``stations`` entra nesta lista porque o formulário o trata como
+        qualquer outro parâmetro editável, mas seu valor não vem do preset: a
+        janela principal mantém sua própria memória por perfil (ver
+        ``MainWindow._select_profile``), já que a resolução da malha não faz
+        parte da identidade de um preset.
+        """
         return (
             self.total_length,
             self.midship_length,
             self.beam,
             self.draft,
             self.bow_angle,
+            self.stations,
             self.concavity,
             self.minimum_radius,
+            self.freeboard,
+            self.transom_ratio,
+            self.deadrise,
         )
+
+    def _profile_identity_fields(self) -> tuple[RangedSpinBox, ...]:
+        """``_parameter_fields()`` sem ``stations``, para comparar com um preset."""
+        return tuple(field for field in self._parameter_fields() if field is not self.stations)
 
     def _request_draw(self) -> None:
         """Dispara o recálculo apenas quando ele é possível."""
@@ -435,7 +548,7 @@ class ParameterPanel(QWidget):
     def _on_input_rejected(self) -> None:
         """Explica a tecla recusada em vez de absorvê-la em silêncio."""
         field = self.sender()
-        if not isinstance(field, RangedSpinBox):
+        if not isinstance(field, (RangedSpinBox, RangedIntSpinBox)):
             return
         self._set_field_error(field, True)
         self._rejected_field = field
@@ -482,7 +595,23 @@ class ParameterPanel(QWidget):
             draft=self.draft.value(),
             bow_angle=self.bow_angle.value(),
             station_concavity=self.concavity.value(),
-            minimum_radius=self.minimum_radius.value(),
+            stations=self.stations.value(),
+            section_points=self.section_points.value(),
+            freeboard=self.freeboard.value(),
+            transom_ratio=self.transom_ratio.value(),
+            deadrise=self.deadrise.value(),
+            closed_deck=self.closed_deck.isChecked(),
+        )
+
+    def current_design(self) -> HullDesign:
+        """Retorna as variáveis de projeto digitadas no formulário."""
+        return HullDesign(
+            total_length=self.total_length.value(),
+            midship_length=self.midship_length.value(),
+            beam=self.beam.value(),
+            draft=self.draft.value(),
+            bow_angle=self.bow_angle.value(),
+            concavity=self.concavity.value(),
         )
 
     def _evaluate(self) -> tuple[bool, str, str]:
@@ -554,11 +683,29 @@ class ParameterPanel(QWidget):
     def reset_defaults(self) -> None:
         """Restaura o conjunto inicial de parâmetros do casco."""
         self.set_profile_values(DEFAULT_PROFILE)
+        self.section_points.setValue(33)
 
-    def set_profile_values(self, profile: HullProfile) -> None:
-        """Carrega um preset sem bloquear a edição manual dos campos."""
+    def set_profile_values(self, profile: HullProfile, stations: int = 64) -> None:
+        """Carrega um preset sem bloquear a edição manual dos campos.
+
+        ``stations`` não faz parte do preset: é a resolução lembrada para ele
+        (ver ``MainWindow._select_profile``), com 64 como ponto de partida.
+        """
         self._cancel_rejection_feedback()
-        for field, value in zip(self._parameter_fields(), profile.values):
+        values = (
+            profile.total_length,
+            profile.midship_length,
+            profile.beam,
+            profile.draft,
+            profile.bow_angle,
+            stations,
+            profile.concavity,
+            profile.minimum_radius,
+            profile.freeboard,
+            profile.transom_ratio,
+            profile.deadrise,
+        )
+        for field, value in zip(self._parameter_fields(), values):
             field.blockSignals(True)
             field.setValue(value)
             field.blockSignals(False)
@@ -568,16 +715,21 @@ class ParameterPanel(QWidget):
         self.parameters_changed.emit()
 
     def matches_profile(self, profile: HullProfile) -> bool:
-        """Verifica se os campos ainda correspondem a um preset."""
+        """Verifica se os campos ainda correspondem a um preset.
+
+        ``stations`` fica de fora: é memória de resolução por perfil, não
+        parte do que identifica o preset.
+        """
         return all(
             abs(field.value() - value) < 1e-9
-            for field, value in zip(self._parameter_fields(), profile.values)
+            for field, value in zip(self._profile_identity_fields(), profile.values)
         )
 
     def set_parametric_enabled(self, enabled: bool) -> None:
         """Evita que parâmetros do gerador sejam confundidos com malhas importadas."""
         self._parametric_enabled = enabled
         self.dimension_group.setEnabled(enabled)
+        self.shape_group.setEnabled(enabled)
         self.constraint_group.setEnabled(enabled)
         self.reset_button.setEnabled(enabled)
         # O rótulo continua no lugar: além da validação paramétrica, ele

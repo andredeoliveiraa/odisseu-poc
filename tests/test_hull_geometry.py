@@ -12,40 +12,107 @@ from app.models.profiles import HULL_PROFILES
 from app.models.transforms import TransformParameters, transformation_matrix
 
 
+def closed_surface_report(mesh) -> tuple[int, float]:
+    """Retorna (arestas abertas, volume) após fundir vértices coincidentes."""
+    _, inverse = np.unique(np.round(mesh.vertices, 9), axis=0, return_inverse=True)
+    points = np.round(mesh.vertices, 9)
+    triangles = inverse.ravel()[mesh.triangulated()]
+    triangles = triangles[
+        (triangles[:, 0] != triangles[:, 1])
+        & (triangles[:, 1] != triangles[:, 2])
+        & (triangles[:, 0] != triangles[:, 2])
+    ]
+    edges = np.sort(
+        np.vstack((triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]])),
+        axis=1,
+    )
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    unique_points = np.unique(points, axis=0)
+    corners = unique_points[triangles]
+    volume = np.einsum(
+        "ij,ij->i", corners[:, 0], np.cross(corners[:, 1], corners[:, 2])
+    ).sum() / 6.0
+    return int((counts != 2).sum()), float(volume)
+
+
 class HullGeneratorTests(unittest.TestCase):
     def test_default_mesh_has_expected_topology(self) -> None:
         generator = HullGenerator()
         mesh = generator.generate_mesh()
-        width = generator.points_per_station
+        count = generator.points_per_station
 
-        self.assertEqual(mesh.vertices.shape, (32 * width, 3))
-        self.assertEqual(mesh.faces.shape, ((32 - 1) * (width - 1), 4))
+        self.assertEqual(count, 33 + 2 * 4)
+        self.assertEqual(mesh.vertices.shape, (64 * count, 3))
         self.assertGreaterEqual(int(mesh.faces.min()), 0)
         self.assertLess(int(mesh.faces.max()), len(mesh.vertices))
 
     def test_declared_dimensions_are_reached(self) -> None:
-        generator = HullGenerator(total_length=12.0, beam=4.0, draft=1.8)
+        generator = HullGenerator(total_length=12.0, beam=4.0, draft=1.8, freeboard=1.1)
         mesh = generator.generate_mesh()
 
         np.testing.assert_allclose(np.ptp(mesh.vertices[:, 0]), 12.0)
         np.testing.assert_allclose(np.ptp(mesh.vertices[:, 1]), 4.0)
         np.testing.assert_allclose(mesh.vertices[:, 2].min(), -1.8)
-        np.testing.assert_allclose(mesh.vertices[:, 2].max(), 0.0)
+        np.testing.assert_allclose(mesh.vertices[:, 2].max(), 1.1)
 
-    def test_sections_never_exceed_the_declared_beam(self) -> None:
-        """O arco de bojo não pode estufar a seção além da boca informada."""
-        for beam, draft in ((4.0, 1.8), (0.1, 0.1), (5.0, 0.4), (3.0, 90.0)):
-            limit = HullGenerator.maximum_station_radius(beam / 2.0, draft)
-            for fraction in (0.1, 0.5, 1.0):
-                with self.subTest(beam=beam, draft=draft, fraction=fraction):
-                    mesh = HullGenerator(
-                        beam=beam,
-                        draft=draft,
-                        minimum_radius=max(0.01, limit * fraction),
-                    ).generate_mesh()
-                    widest = float(np.abs(mesh.vertices[:, 1]).max())
-                    self.assertLessEqual(widest, beam / 2.0 + 1e-9)
-                    self.assertTrue(np.isfinite(mesh.vertices).all())
+    def test_hull_is_a_closed_outward_surface(self) -> None:
+        for parameters in (
+            {},
+            {"transom_ratio": 0.0},
+            {"deadrise": 30.0, "station_concavity": 1.0},
+            {"stations": 4, "section_points": 5},
+        ):
+            with self.subTest(**parameters):
+                open_edges, volume = closed_surface_report(
+                    HullGenerator(closed_deck=True, **parameters).generate_mesh()
+                )
+                self.assertEqual(open_edges, 0)
+                self.assertGreater(volume, 0.0)
+
+    def test_transom_widens_the_stern_and_adds_volume(self) -> None:
+        pointed = HullGenerator(transom_ratio=0.0, closed_deck=True)
+        transom = HullGenerator(transom_ratio=0.7, closed_deck=True)
+        stern = transom.generate_mesh().vertices[: transom.points_per_station]
+
+        np.testing.assert_allclose(np.ptp(stern[:, 1]), 0.7 * 4.0)
+        self.assertGreater(
+            closed_surface_report(transom.generate_mesh())[1],
+            closed_surface_report(pointed.generate_mesh())[1],
+        )
+
+    def test_open_deck_leaves_only_the_deck_edge_open(self) -> None:
+        generator = HullGenerator(closed_deck=False)
+        mesh = generator.generate_mesh()
+        closed = HullGenerator(closed_deck=True).generate_mesh()
+
+        self.assertEqual(len(closed.faces) - len(mesh.faces), generator.stations - 1)
+        points = np.round(mesh.vertices, 9)
+        unique_points, inverse = np.unique(points, axis=0, return_inverse=True)
+        triangles = inverse.ravel()[mesh.triangulated()]
+        edges = np.sort(
+            np.vstack((triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]])),
+            axis=1,
+        )
+        edges = edges[edges[:, 0] != edges[:, 1]]
+        unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
+        open_edges = unique_edges[counts == 1]
+
+        self.assertGreater(len(open_edges), 0)
+        np.testing.assert_allclose(unique_points[open_edges][..., 2], generator.freeboard)
+
+    def test_deadrise_sets_the_bottom_angle_at_the_keel(self) -> None:
+        generator = HullGenerator(deadrise=20.0, stations=5, section_points=65)
+        vertices = generator.generate_mesh().vertices
+        count = generator.points_per_station
+        midship = vertices[2 * count : 3 * count]
+        keel = midship[count // 2]
+        beside = midship[count // 2 + 1]
+
+        angle = np.degrees(np.arctan2(beside[2] - keel[2], beside[1] - keel[1]))
+        self.assertAlmostEqual(angle, 20.0, delta=1.5)
+        flat = HullGenerator(deadrise=0.0, stations=5, section_points=65).generate_mesh().vertices
+        flat_mid = flat[2 * count : 3 * count]
+        self.assertLess(flat_mid[count // 2 + 1, 2] - flat_mid[count // 2, 2], 0.01)
 
     def test_invalid_dimensions_are_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -55,142 +122,65 @@ class HullGeneratorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             HullGenerator(station_concavity=1.1)
         with self.assertRaises(ValueError):
-            HullGenerator(minimum_radius=0.0)
+            HullGenerator(stations=513)
+        with self.assertRaises(ValueError):
+            HullGenerator(section_points=32)
+        with self.assertRaises(ValueError):
+            HullGenerator(section_points=3)
+        with self.assertRaises(ValueError):
+            HullGenerator(freeboard=0.0)
+        with self.assertRaises(ValueError):
+            HullGenerator(transom_ratio=0.99)
+        with self.assertRaises(ValueError):
+            HullGenerator(deadrise=40.0)
 
+    def test_longitudinal_resolution_can_be_changed(self) -> None:
+        generator = HullGenerator(stations=12, section_points=5)
+        mesh = generator.generate_mesh()
 
-class StationProfileShapeTests(unittest.TestCase):
-    """A seção nunca pode dobrar sobre si mesma, senão a malha se autointersecciona."""
+        self.assertEqual(mesh.vertices.shape, (12 * generator.points_per_station, 3))
 
-    def test_profile_is_never_folded(self) -> None:
-        import itertools
+    def test_finer_sections_follow_the_bottom_curve(self) -> None:
+        def midship_bottom(section_points: int) -> np.ndarray:
+            generator = HullGenerator(stations=5, section_points=section_points)
+            count = generator.points_per_station
+            section = generator.generate_mesh().vertices[2 * count : 3 * count]
+            return section[section[:, 2] <= 1e-12][:, 1:]
 
-        for beam, draft, concavity, radius_fraction in itertools.product(
-            (0.2, 4.0, 5.5, 1000.0),
-            (0.1, 1.4, 1.8, 900.0),
-            (0.0, 0.5, 0.85, 1.0),
-            (0.05, 0.6, 0.95, 1.0),
-        ):
-            half_width = beam / 2.0
-            limit = HullGenerator.maximum_station_radius(half_width, draft)
-            radius = max(0.01, limit * radius_fraction)
-            try:
-                generator = HullGenerator(
-                    beam=beam, draft=draft,
-                    station_concavity=concavity, minimum_radius=radius,
-                )
-            except ValueError:
-                continue
-            with self.subTest(beam=beam, draft=draft, concavity=concavity, radius=radius):
-                profile = generator._half_station(half_width, draft)
-                self.assertTrue(
-                    np.all(np.diff(profile[:, 0]) >= -1e-9),
-                    "a meia-boca deixou de crescer monotonicamente da quilha à borda livre",
-                )
+        coarse = midship_bottom(5)
+        fine = midship_bottom(33)
+        # A malha grossa liga os pontos por retas; a fina segue a curva, que
+        # fica abaixo dessas cordas (seção convexa).
+        coarse = coarse[np.argsort(coarse[:, 0])]
+        chord = np.interp(fine[:, 0], coarse[:, 0], coarse[:, 1])
+        self.assertTrue(np.all(fine[:, 1] <= chord + 1e-9))
+        self.assertGreater(np.max(chord - fine[:, 1]), 0.02)
 
-    def test_high_concavity_near_the_radius_limit_does_not_fold(self) -> None:
-        """Caso que reproduziu a dobra original: raio perto do limite e concavidade alta."""
-        generator = HullGenerator(
-            beam=5.5, draft=1.4, bow_angle=55.0,
-            station_concavity=0.85, minimum_radius=2.5,
+    def test_stations_concentrate_where_the_shape_changes(self) -> None:
+        generator = HullGenerator(stations=64, transom_ratio=0.0)
+        adaptive = generator._station_parameters()
+        uniform = np.linspace(0.0, 1.0, 64)
+
+        self.assertLess(
+            np.abs(np.diff(generator._longitudinal_fullness(adaptive))).max(),
+            0.6 * np.abs(np.diff(generator._longitudinal_fullness(uniform))).max(),
         )
-        profile = generator._half_station(generator.beam / 2.0, generator.draft)
-        np.testing.assert_array_less(-np.diff(profile[:, 0]), 1e-9)
-
-
-class MinimumRadiusTests(unittest.TestCase):
-    """O raio mínimo precisa moldar a malha, e não apenas validá-la."""
-
-    def test_radius_changes_the_generated_mesh(self) -> None:
-        sharp = HullGenerator(minimum_radius=0.4).generate_mesh()
-        round_keel = HullGenerator(minimum_radius=1.9).generate_mesh()
-
-        self.assertFalse(np.allclose(sharp.vertices, round_keel.vertices))
-
-    def test_midship_keel_follows_the_requested_radius(self) -> None:
-        radius = 1.5
-        generator = HullGenerator(beam=4.0, draft=1.8, minimum_radius=radius)
-        profile = generator._half_station(generator.beam / 2.0, generator.draft)
-
-        center = np.array([0.0, -generator.draft + radius])
-        on_arc = profile[:4]
-        distances = np.linalg.norm(on_arc - center, axis=1)
-
-        np.testing.assert_allclose(distances, radius, atol=1e-9)
-
-    def test_station_profile_starts_at_keel_and_ends_at_sheer(self) -> None:
-        generator = HullGenerator(beam=5.0, draft=2.0, minimum_radius=1.0)
-        profile = generator._half_station(2.5, 2.0)
-
-        np.testing.assert_allclose(profile[0], (0.0, -2.0))
-        np.testing.assert_allclose(profile[-1], (2.5, 0.0))
-
-    def test_larger_radius_flattens_the_bottom(self) -> None:
-        keel_depth = []
-        for radius in (0.3, 1.9):
-            generator = HullGenerator(beam=4.0, draft=1.8, minimum_radius=radius)
-            profile = generator._half_station(2.0, 1.8)
-            # Altura do perfil a meia-boca: um fundo mais chato sobe menos.
-            keel_depth.append(float(np.interp(1.0, profile[:, 0], profile[:, 1])))
-
-        self.assertLess(keel_depth[1], keel_depth[0])
-
-
-class BowAngleTests(unittest.TestCase):
-    def test_bow_angle_does_not_reshape_the_stern(self) -> None:
-        sections = []
-        for angle in (12.0, 80.0):
-            mesh = HullGenerator(bow_angle=angle).generate_mesh()
-            x = mesh.vertices[:, 0]
-            sections.append(float(np.ptp(mesh.vertices[x < -4.5, 1])))
-
-        self.assertAlmostEqual(sections[0], sections[1], places=9)
-
-    def test_bow_angle_reshapes_the_bow(self) -> None:
-        widths = []
-        for angle in (12.0, 80.0):
-            mesh = HullGenerator(bow_angle=angle).generate_mesh()
-            x = mesh.vertices[:, 0]
-            widths.append(float(np.ptp(mesh.vertices[x > 4.5, 1])))
-
-        self.assertNotAlmostEqual(widths[0], widths[1], places=3)
 
 
 class HullConstraintValidatorTests(unittest.TestCase):
-    def test_limit_is_the_half_beam_of_the_midship_section(self) -> None:
+    def test_radius_above_estimated_limit_is_rejected(self) -> None:
+        generator = HullGenerator(midship_length=6.0, draft=1.8)
         validator = HullConstraintValidator()
 
-        for beam, draft in ((4.0, 1.8), (4.0, 0.6), (3.0, 90.0)):
-            with self.subTest(beam=beam, draft=draft):
-                generator = HullGenerator(beam=beam, draft=draft)
-                self.assertAlmostEqual(
-                    validator.maximum_achievable_radius(generator), beam / 2.0
-                )
-
-    def test_constructibility_bound_never_binds(self) -> None:
-        """A meia-boca é sempre o limite mais apertado dos dois."""
-        for half_width in (0.05, 2.0, 500.0):
-            for depth in (0.05, 1.8, 450.0):
-                with self.subTest(half_width=half_width, depth=depth):
-                    constructible = (half_width**2 + depth**2) / (2.0 * depth)
-                    self.assertGreaterEqual(constructible, half_width - 1e-12)
-                    self.assertAlmostEqual(
-                        HullGenerator.maximum_station_radius(half_width, depth),
-                        half_width,
-                    )
-
-    def test_radius_above_limit_is_rejected(self) -> None:
-        generator = HullGenerator(beam=4.0, draft=1.8)
-        result = HullConstraintValidator().validate(
-            generator, concavity=0.2, minimum_radius=9.0
-        )
+        result = validator.validate(generator, concavity=0.2, minimum_radius=4.9)
 
         self.assertFalse(result.valid)
-        self.assertIn("limite", result.message)
+        self.assertAlmostEqual(result.maximum_radius, 4.8)
 
     def test_valid_radius_is_accepted(self) -> None:
         generator = HullGenerator()
         result = HullConstraintValidator().validate(
-            generator, concavity=0.2, minimum_radius=1.9
+            generator, concavity=0.2, minimum_radius=2.0
         )
 
         self.assertTrue(result.valid)
@@ -206,7 +196,9 @@ class HullConstraintValidatorTests(unittest.TestCase):
                     draft=profile.draft,
                     bow_angle=profile.bow_angle,
                     station_concavity=profile.concavity,
-                    minimum_radius=profile.minimum_radius,
+                    freeboard=profile.freeboard,
+                    transom_ratio=profile.transom_ratio,
+                    deadrise=profile.deadrise,
                 )
                 result = validator.validate(
                     generator, profile.concavity, profile.minimum_radius

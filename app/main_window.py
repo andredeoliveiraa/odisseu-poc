@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QUndoStack,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QDockWidget,
     QLabel,
     QComboBox,
@@ -28,15 +29,18 @@ from PySide6.QtWidgets import (
 
 from app.commands.mesh_commands import TransformMeshCommand
 from app.controllers.hull_controller import HullController
+from app.models.attributes import ATTRIBUTES_BY_KEY, evaluate_attributes
 from app.models.nurbs_surface import (
     EditableNurbsSurface,
     NurbsSurfaceError,
     list_editable_surfaces,
 )
+from app.models.sampling import DEFAULT_MINIMUM_RADIUS, AttributeSampler, SampledDesign
 from app.models.transforms import TransformParameters, transformation_matrix
-from app.models.profiles import CUSTOM_PROFILE_NAME, DEFAULT_PROFILE, HULL_PROFILES
+from app.models.profiles import CUSTOM_PROFILE_NAME, DEFAULT_PROFILE, HULL_PROFILES, HullProfile
 from app.rhino_import import read_3dm_as_polydata
 from app.visualization import HullViewer
+from app.views.attribute_panel import AttributePanel
 from app.views.nurbs_face_dialog import NurbsFaceSelectionDialog
 from app.views.parameter_panel import ParameterPanel
 
@@ -69,6 +73,10 @@ class MainWindow(QMainWindow):
         self._source_path: Path | None = None
         self._nurbs_surface: EditableNurbsSurface | None = None
         self._nurbs_edit_active = False
+        self._active_profile_name = DEFAULT_PROFILE.name
+        self._profile_stations = {profile.name: 64 for profile in HULL_PROFILES}
+        self._samples: list[SampledDesign] = []
+        self._sample_attributes: list[str] = []
 
         self.setWindowTitle(f"{DEFAULT_PROFILE.name} — Odisseu")
         self.resize(1280, 800)
@@ -99,6 +107,27 @@ class MainWindow(QMainWindow):
         self.parameter_dock.setWidget(parameter_scroll)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.parameter_dock)
 
+        self.attribute_panel = AttributePanel(self)
+        attribute_scroll = QScrollArea(self)
+        attribute_scroll.setWidgetResizable(True)
+        attribute_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        attribute_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        attribute_scroll.setWidget(self.attribute_panel)
+
+        self.attribute_dock = QDockWidget("Atributos", self)
+        self.attribute_dock.setObjectName("attributeDock")
+        self.attribute_dock.setMinimumWidth(340)
+        self.attribute_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.attribute_dock.setWidget(attribute_scroll)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.attribute_dock)
+        self.tabifyDockWidget(self.parameter_dock, self.attribute_dock)
+        self.parameter_dock.raise_()
+
         self.controller = HullController(self.viewer, self.parameter_panel)
         self.undo_stack = QUndoStack(self)
         # Cada comando guarda duas cópias da malha; sem teto, o histórico cresce
@@ -107,6 +136,9 @@ class MainWindow(QMainWindow):
         self.controller.hull_generated.connect(self._on_parametric_hull_generated)
         self.parameter_panel.transform_requested.connect(self._apply_transform)
         self.parameter_panel.parameters_changed.connect(self._on_parameters_edited)
+        self.parameter_panel.parameters_changed.connect(self._refresh_attribute_scores)
+        self.attribute_panel.sample_requested.connect(self._sample_designs)
+        self.attribute_panel.design_selected.connect(self._show_sampled_design)
         self.viewer.status_message.connect(self._show_status)
 
         self._create_actions()
@@ -237,6 +269,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.fit_view_action)
         view_menu.addSeparator()
         view_menu.addAction(self.parameter_dock.toggleViewAction())
+        view_menu.addAction(self.attribute_dock.toggleViewAction())
 
         help_menu = self.menuBar().addMenu("Ajuda")
         help_menu.addAction(self.about_action)
@@ -280,9 +313,14 @@ class MainWindow(QMainWindow):
         """Aplica um preset e redesenha; a entrada final não altera valores."""
         if not 0 <= index < len(HULL_PROFILES):
             return
+        self._profile_stations[self._active_profile_name] = self.parameter_panel.stations.value()
         profile = HULL_PROFILES[index]
+        self._active_profile_name = profile.name
         self.parameter_panel.set_parametric_enabled(True)
-        self.parameter_panel.set_profile_values(profile)
+        self.parameter_panel.set_profile_values(
+            profile,
+            self._profile_stations[profile.name],
+        )
         self.controller.draw()
 
     def _select_profile_by_name(self, name: str) -> None:
@@ -313,6 +351,67 @@ class MainWindow(QMainWindow):
         self.profile_combo.blockSignals(True)
         self.profile_combo.setCurrentIndex(matched)
         self.profile_combo.blockSignals(False)
+
+    def _refresh_attribute_scores(self) -> None:
+        """Reavalia os modelos de atributo com os valores do formulário."""
+        if not self.parameter_panel.is_parametric_enabled():
+            self.attribute_panel.set_scores(None)
+            return
+        self.attribute_panel.set_scores(
+            evaluate_attributes(self.parameter_panel.current_design())
+        )
+
+    def _sample_designs(self, attributes: list[str], count: int) -> None:
+        """Executa o S-TLBO e exibe o primeiro projeto amostrado."""
+        self.statusBar().showMessage("Amostrando projetos com S-TLBO...")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            samples = AttributeSampler().sample(attributes, count)
+        except ValueError as error:
+            QMessageBox.warning(self, "Amostragem inválida", str(error))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        self._samples = samples
+        self._sample_attributes = attributes
+        self.attribute_panel.set_samples(samples)
+        infeasible = sum(not sample.feasible for sample in samples)
+        if infeasible:
+            self.statusBar().showMessage(
+                f"{len(samples)} projetos amostrados · {infeasible} não atingiram "
+                "todos os atributos"
+            )
+        else:
+            self.statusBar().showMessage(f"{len(samples)} projetos amostrados")
+
+    def _show_sampled_design(self, index: int) -> None:
+        """Carrega um projeto amostrado no formulário e redesenha o casco."""
+        design = self._samples[index].design
+        attribute_names = " + ".join(
+            ATTRIBUTES_BY_KEY[key].label.split(" (")[0] for key in self._sample_attributes
+        )
+        profile = HullProfile(
+            name=f"Amostra {index + 1} · {attribute_names}",
+            description="Projeto gerado por amostragem S-TLBO.",
+            total_length=design.total_length,
+            midship_length=design.midship_length,
+            beam=design.beam,
+            draft=design.draft,
+            bow_angle=design.bow_angle,
+            concavity=design.concavity,
+            minimum_radius=DEFAULT_MINIMUM_RADIUS,
+            # A amostragem não altera a forma; mantém a escolhida no painel.
+            freeboard=self.parameter_panel.freeboard.value(),
+            transom_ratio=self.parameter_panel.transom_ratio.value(),
+            deadrise=self.parameter_panel.deadrise.value(),
+        )
+        self._active_profile_name = profile.name
+        self.parameter_panel.set_profile_values(
+            profile, self.parameter_panel.stations.value()
+        )
+        self.parameter_panel.set_parametric_enabled(True)
+        self.controller.draw()
 
     # ------------------------------------------------------------------
     # Arquivos
@@ -564,7 +663,10 @@ class MainWindow(QMainWindow):
         """Volta ao fluxo paramétrico com o perfil padrão da aplicação."""
         self._exit_nurbs_edit_mode()
         self.parameter_panel.set_parametric_enabled(True)
-        self._select_profile_by_name(DEFAULT_PROFILE.name)
+        self.parameter_panel.reset_defaults()
+        self._active_profile_name = DEFAULT_PROFILE.name
+        self._profile_stations[self._active_profile_name] = 64
+        self._select_profile_by_name(self._active_profile_name)
 
     def _on_parametric_hull_generated(self) -> None:
         """Sincroniza a interface após um recálculo paramétrico."""

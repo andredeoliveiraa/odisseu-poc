@@ -68,7 +68,9 @@ class HullViewer(QtInteractor):
     def set_hull(self, generated_mesh: HullMesh) -> None:
         """Substitui a malha exibida pelo resultado do gerador."""
         sample_hull = pv.PolyData(generated_mesh.vertices, generated_mesh.pyvista_faces)
-        self.set_mesh(sample_hull)
+        # Funde os pontos coincidentes da roda de proa e do plano central para
+        # que a superfície fique fechada (estanque) ao exportar.
+        self.set_mesh(sample_hull.clean())
 
     def set_mesh(self, mesh: pv.DataSet | pv.MultiBlock) -> None:
         """Exibe uma malha lida de arquivo ou criada pelo gerador."""
@@ -86,7 +88,7 @@ class HullViewer(QtInteractor):
             edge_color="#dcebf5",
             line_width=1,
             name=self.ACTOR_NAME,
-            smooth_shading=False,
+            smooth_shading=True,
         )
 
     def load_mesh(self, file_path: str | Path) -> None:
