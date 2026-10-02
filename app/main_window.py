@@ -28,10 +28,19 @@ from PySide6.QtWidgets import (
 
 from app.commands.mesh_commands import TransformMeshCommand
 from app.controllers.hull_controller import HullController
+from app.models.nurbs_surface import (
+    EditableNurbsSurface,
+    NurbsSurfaceError,
+    list_editable_surfaces,
+)
 from app.models.transforms import TransformParameters, transformation_matrix
 from app.models.profiles import CUSTOM_PROFILE_NAME, DEFAULT_PROFILE, HULL_PROFILES
+from app.rhino_import import read_3dm_as_polydata
 from app.visualization import HullViewer
+from app.views.nurbs_face_dialog import NurbsFaceSelectionDialog
 from app.views.parameter_panel import ParameterPanel
+
+import pyvista as pv
 
 
 class MainWindow(QMainWindow):
@@ -41,7 +50,7 @@ class MainWindow(QMainWindow):
     renderizador ficam isolados em :class:`HullViewer`.
     """
 
-    SUPPORTED_MESH_EXTENSIONS = {".stl", ".obj", ".ply", ".vtk", ".vtp"}
+    SUPPORTED_MESH_EXTENSIONS = {".stl", ".obj", ".ply", ".vtk", ".vtp", ".3dm"}
     EXPORT_EXTENSIONS = {
         "STL (*.stl)": ".stl",
         "PLY (*.ply)": ".ply",
@@ -58,6 +67,8 @@ class MainWindow(QMainWindow):
         self._model_name = DEFAULT_PROFILE.name
         self._model_kind = "Gerado no Odisseu"
         self._source_path: Path | None = None
+        self._nurbs_surface: EditableNurbsSurface | None = None
+        self._nurbs_edit_active = False
 
         self.setWindowTitle(f"{DEFAULT_PROFILE.name} — Odisseu")
         self.resize(1280, 800)
@@ -135,6 +146,26 @@ class MainWindow(QMainWindow):
         self.export_action.setIcon(self._icon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.export_action.triggered.connect(self._export_hull)
 
+        self.edit_nurbs_action = QAction("Editar superfície NURBS...", self)
+        self.edit_nurbs_action.setStatusTip(
+            "Abre um .3dm e edita uma superfície pelos pontos de controle"
+        )
+        self.edit_nurbs_action.triggered.connect(self._start_nurbs_edit)
+
+        self.finish_nurbs_action = QAction("Concluir edição de superfície", self)
+        self.finish_nurbs_action.setStatusTip(
+            "Sai do modo de edição e mantém o resultado como o modelo atual"
+        )
+        self.finish_nurbs_action.setEnabled(False)
+        self.finish_nurbs_action.triggered.connect(self._finish_nurbs_edit)
+
+        self.save_nurbs_action = QAction("Salvar superfície como .3dm...", self)
+        self.save_nurbs_action.setStatusTip(
+            "Salva só a superfície editada num novo arquivo .3dm"
+        )
+        self.save_nurbs_action.setEnabled(False)
+        self.save_nurbs_action.triggered.connect(self._save_nurbs_as_3dm)
+
         self.draw_action = QAction("Atualizar modelo 3D", self)
         self.draw_action.setShortcut("Ctrl+Return")
         self.draw_action.setStatusTip("Recalcula a malha com os parâmetros atuais")
@@ -188,6 +219,10 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.new_action)
         file_menu.addAction(self.open_action)
         file_menu.addAction(self.export_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.edit_nurbs_action)
+        file_menu.addAction(self.finish_nurbs_action)
+        file_menu.addAction(self.save_nurbs_action)
         file_menu.addSeparator()
         file_menu.addAction(self.quit_action)
 
@@ -288,7 +323,7 @@ class MainWindow(QMainWindow):
             self,
             "Abrir casco",
             "",
-            "Malhas 3D (*.stl *.obj *.ply *.vtk *.vtp);;Todos os arquivos (*)",
+            "Malhas 3D (*.stl *.obj *.ply *.vtk *.vtp *.3dm);;Todos os arquivos (*)",
         )
         if file_path:
             self._load_hull_path(Path(file_path))
@@ -299,14 +334,21 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Formato não suportado",
-                "Escolha uma malha STL, OBJ, PLY, VTK ou VTP.",
+                "Escolha uma malha STL, OBJ, PLY, VTK, VTP ou um arquivo .3dm do Rhino.",
             )
             return
 
+        self._exit_nurbs_edit_mode()
         self._show_status(f"Abrindo {file_path.name}...")
+        omission_note = ""
         try:
-            self.viewer.load_mesh(file_path)
-        except Exception as error:  # PyVista/VTK usa exceções específicas por leitor.
+            if file_path.suffix.lower() == ".3dm":
+                polydata, report = read_3dm_as_polydata(file_path)
+                self.viewer.set_mesh(polydata)
+                omission_note = report.describe_omissions()
+            else:
+                self.viewer.load_mesh(file_path)
+        except Exception as error:  # PyVista/VTK/rhino3dm usam exceções próprias por leitor.
             self._show_error(
                 "Não foi possível abrir o modelo",
                 f"O arquivo “{file_path.name}” não pôde ser lido.",
@@ -322,6 +364,8 @@ class MainWindow(QMainWindow):
         self.parameter_panel.set_parametric_enabled(False)
         self.viewer.reset_view()
         self._refresh_model_info()
+        if omission_note:
+            QMessageBox.information(self, "Importado com ressalvas", omission_note)
         self._show_status(f"“{file_path.name}” foi importado com sucesso")
 
     def _export_hull(self) -> None:
@@ -369,10 +413,156 @@ class MainWindow(QMainWindow):
         return path.with_name(path.name + extension)
 
     # ------------------------------------------------------------------
+    # Edição de superfície NURBS
+    # ------------------------------------------------------------------
+    def _start_nurbs_edit(self) -> None:
+        """Abre um .3dm, deixa escolher uma superfície e entra no modo de edição."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Abrir .3dm para editar", "", "Arquivos Rhino (*.3dm)"
+        )
+        if not file_path:
+            return
+
+        try:
+            candidates = list_editable_surfaces(file_path)
+        except NurbsSurfaceError as error:
+            self._show_error("Não foi possível abrir o arquivo", str(error), error)
+            return
+
+        if not candidates:
+            QMessageBox.information(
+                self,
+                "Nenhuma superfície editável",
+                "Este arquivo não tem nenhuma superfície com forma NURBS "
+                "reconhecível. Curvas soltas e malhas sem Brep não têm "
+                "pontos de controle para editar.",
+            )
+            return
+
+        dialog = NurbsFaceSelectionDialog(candidates, self)
+        if dialog.exec() != NurbsFaceSelectionDialog.DialogCode.Accepted:
+            return
+        face_index = dialog.selected_face_index()
+        if face_index is None:
+            return
+
+        try:
+            surface = EditableNurbsSurface.from_3dm_face(file_path, face_index)
+        except NurbsSurfaceError as error:
+            self._show_error("Não foi possível carregar a superfície", str(error), error)
+            return
+
+        self._exit_nurbs_edit_mode()
+        self._nurbs_surface = surface
+        self._nurbs_edit_active = True
+        self._source_path = Path(file_path)
+        self._model_name = f"{Path(file_path).stem} (editando NURBS)"
+        self._model_kind = "Superfície NURBS em edição"
+
+        self.parameter_panel.set_parametric_enabled(False)
+        # Uma transformação rígida aplicada durante a edição seria desfeita
+        # sem aviso no próximo arraste, porque a retesselação sempre parte
+        # das coordenadas originais da superfície: as duas edições não se
+        # compõem neste MVP, então mantemos só uma disponível por vez.
+        self.parameter_panel.transform_group.setEnabled(False)
+        self.undo_stack.clear()
+        self._refresh_nurbs_preview()
+        self._show_control_point_handles()
+
+        self.finish_nurbs_action.setEnabled(True)
+        self.save_nurbs_action.setEnabled(True)
+        self._show_status(
+            "Editando pontos de controle · arraste as esferas na cena 3D "
+            "para remodelar a superfície"
+        )
+
+    def _refresh_nurbs_preview(self) -> None:
+        """Retesela a superfície atual e substitui a malha exibida por ela."""
+        mesh = self._nurbs_surface.tessellate()
+        self.viewer.set_mesh(pv.PolyData(mesh.vertices, mesh.pyvista_faces))
+
+    def _show_control_point_handles(self) -> None:
+        points = self._nurbs_surface.control_points().reshape(-1, 3)
+        self.viewer.show_control_point_handles(points, self._on_control_point_moved)
+        self.viewer.reset_view()
+
+    def _on_control_point_moved(self, index: int, new_position: tuple[float, float, float]) -> None:
+        """Aplica o arraste de uma alça: move o CV e retesela ao vivo.
+
+        Só a posição dos pontos muda a cada arraste — a topologia da malha de
+        exibição é sempre a mesma —, então atualizamos os pontos no lugar em
+        vez de reconstruir o ator inteiro, para o arraste ficar fluido.
+        """
+        if self._nurbs_surface is None:
+            return
+        self._nurbs_surface.move_control_point_flat(index, new_position)
+        mesh = self._nurbs_surface.tessellate()
+        try:
+            self.viewer.update_current_mesh_points(mesh.vertices)
+        except ValueError:
+            # A malha exibida não é a que esperávamos (não deveria acontecer
+            # em uso normal); refaz o ator do zero para não travar a edição.
+            self.viewer.set_mesh(pv.PolyData(mesh.vertices, mesh.pyvista_faces))
+
+    def _finish_nurbs_edit(self) -> None:
+        """Sai do modo de edição, mantendo o resultado como o modelo atual."""
+        if not self._nurbs_edit_active:
+            return
+        self.viewer.clear_control_point_handles()
+        self._nurbs_edit_active = False
+        self.finish_nurbs_action.setEnabled(False)
+        self.save_nurbs_action.setEnabled(False)
+        self.parameter_panel.transform_group.setEnabled(True)
+        if self._source_path is not None:
+            self._model_name = f"{self._source_path.stem} (NURBS editado)"
+        self._model_kind = "Superfície NURBS editada"
+        self.viewer.reset_view()
+        self._refresh_model_info()
+        self._show_status("Edição concluída · use “Exportar malha” para salvar o resultado")
+
+    def _save_nurbs_as_3dm(self) -> None:
+        """Salva só a superfície editada, como um novo arquivo .3dm."""
+        if self._nurbs_surface is None:
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Salvar superfície como .3dm", "superficie_editada.3dm", "Arquivos Rhino (*.3dm)"
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".3dm"):
+            file_path += ".3dm"
+        try:
+            self._nurbs_surface.save_to_3dm(file_path)
+        except Exception as error:
+            self._show_error("Não foi possível salvar", "A superfície não pôde ser salva.", error)
+            return
+        self._show_status(
+            f"Superfície salva em “{Path(file_path).name}” "
+            "(arquivo novo, só com esta superfície)"
+        )
+
+    def _exit_nurbs_edit_mode(self) -> None:
+        """Encerra a edição de NURBS sem preservar o resultado, se estiver ativa.
+
+        Chamado antes de trocar de modelo por qualquer outro caminho (novo
+        casco, abrir outro arquivo), para não deixar alças órfãs na cena
+        apontando para uma superfície que já não é mais a atual.
+        """
+        if not self._nurbs_edit_active:
+            return
+        self.viewer.clear_control_point_handles()
+        self._nurbs_edit_active = False
+        self._nurbs_surface = None
+        self.finish_nurbs_action.setEnabled(False)
+        self.save_nurbs_action.setEnabled(False)
+        self.parameter_panel.transform_group.setEnabled(True)
+
+    # ------------------------------------------------------------------
     # Modelo e histórico
     # ------------------------------------------------------------------
     def _new_hull(self) -> None:
         """Volta ao fluxo paramétrico com o perfil padrão da aplicação."""
+        self._exit_nurbs_edit_mode()
         self.parameter_panel.set_parametric_enabled(True)
         self._select_profile_by_name(DEFAULT_PROFILE.name)
 

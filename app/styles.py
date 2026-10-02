@@ -144,6 +144,35 @@ QStatusBar {
 QScrollArea {
     border: none;
 }
+QFrame#collapsibleSection {
+    border: 1px solid #35404b;
+    border-radius: 7px;
+}
+QPushButton#sectionHeader {
+    text-align: left;
+    background-color: #1c2127;
+    border: none;
+    border-bottom: 1px solid transparent;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 9px 12px;
+    font-weight: 600;
+}
+QPushButton#sectionHeader:hover {
+    background-color: #232a32;
+}
+QPushButton#sectionHeader:checked {
+    border-bottom: 1px solid #35404b;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+QPushButton#sectionHeader:!checked {
+    border-bottom-left-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+QWidget#sectionContent {
+    background-color: transparent;
+}
 """
 
 

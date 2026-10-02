@@ -37,6 +37,7 @@ class HullViewer(QtInteractor):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._current_mesh: pv.DataSet | None = None
+        self._control_point_widgets: list = []
         self.set_background("#20252b")
         self._build_initial_scene()
 
@@ -139,6 +140,60 @@ class HullViewer(QtInteractor):
         """Enquadra o modelo preservando a orientação escolhida pelo usuário."""
         self.reset_camera()
         self.render()
+
+    def update_current_mesh_points(self, vertices: np.ndarray) -> None:
+        """Atualiza só as posições dos pontos da malha atual, sem recriar o ator.
+
+        Usado durante a edição de pontos de controle: a topologia (quantidade
+        de pontos e faces) não muda a cada arraste, só a posição deles, então
+        atualizar em lugar de remontar o ator mantém a edição fluida.
+        """
+        if self._current_mesh is None or len(vertices) != self._current_mesh.n_points:
+            raise ValueError(
+                "A nova malha precisa ter a mesma quantidade de pontos da atual."
+            )
+        self._current_mesh.points = vertices
+        self.render()
+
+    def show_control_point_handles(self, points: np.ndarray, on_move) -> None:
+        """Mostra pontos de controle como alças 3D arrastáveis.
+
+        ``points`` é uma lista ou array de coordenadas ``(N, 3)``; a ordem é
+        preservada, então o índice recebido em ``on_move(index, nova_posicao)``
+        corresponde diretamente à posição em ``points``. O raio das esferas é
+        proporcional ao tamanho da própria superfície, para ficar visível sem
+        dominar a cena em cascos grandes ou pequenos.
+        """
+        self.clear_control_point_handles()
+        points = np.asarray(points, dtype=np.float64)
+        if len(points) == 0:
+            return
+
+        spread = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+        radius = max(spread * 0.012, 1e-3)
+
+        def _dispatch(point, index):
+            on_move(index, tuple(point))
+
+        widgets = self.add_sphere_widget(
+            _dispatch,
+            center=[tuple(p) for p in points],
+            radius=radius,
+            color="#ffb454",
+            selected_color="#ff5f56",
+            indices=list(range(len(points))),
+            interaction_event="always",
+        )
+        # add_sphere_widget devolve um único widget quando só um centro é
+        # passado; normalizamos para lista para o resto do código não
+        # precisar distinguir os dois casos.
+        self._control_point_widgets = list(widgets) if len(points) > 1 else [widgets]
+
+    def clear_control_point_handles(self) -> None:
+        """Remove as alças de ponto de controle, se houver alguma na cena."""
+        if self._control_point_widgets:
+            self.clear_sphere_widgets()
+            self._control_point_widgets = []
 
     def _surface_mesh(self) -> pv.PolyData:
         """Converte o objeto atual em superfície adequada para exportação."""

@@ -58,6 +58,45 @@ class HullGeneratorTests(unittest.TestCase):
             HullGenerator(minimum_radius=0.0)
 
 
+class StationProfileShapeTests(unittest.TestCase):
+    """A seção nunca pode dobrar sobre si mesma, senão a malha se autointersecciona."""
+
+    def test_profile_is_never_folded(self) -> None:
+        import itertools
+
+        for beam, draft, concavity, radius_fraction in itertools.product(
+            (0.2, 4.0, 5.5, 1000.0),
+            (0.1, 1.4, 1.8, 900.0),
+            (0.0, 0.5, 0.85, 1.0),
+            (0.05, 0.6, 0.95, 1.0),
+        ):
+            half_width = beam / 2.0
+            limit = HullGenerator.maximum_station_radius(half_width, draft)
+            radius = max(0.01, limit * radius_fraction)
+            try:
+                generator = HullGenerator(
+                    beam=beam, draft=draft,
+                    station_concavity=concavity, minimum_radius=radius,
+                )
+            except ValueError:
+                continue
+            with self.subTest(beam=beam, draft=draft, concavity=concavity, radius=radius):
+                profile = generator._half_station(half_width, draft)
+                self.assertTrue(
+                    np.all(np.diff(profile[:, 0]) >= -1e-9),
+                    "a meia-boca deixou de crescer monotonicamente da quilha à borda livre",
+                )
+
+    def test_high_concavity_near_the_radius_limit_does_not_fold(self) -> None:
+        """Caso que reproduziu a dobra original: raio perto do limite e concavidade alta."""
+        generator = HullGenerator(
+            beam=5.5, draft=1.4, bow_angle=55.0,
+            station_concavity=0.85, minimum_radius=2.5,
+        )
+        profile = generator._half_station(generator.beam / 2.0, generator.draft)
+        np.testing.assert_array_less(-np.diff(profile[:, 0]), 1e-9)
+
+
 class MinimumRadiusTests(unittest.TestCase):
     """O raio mínimo precisa moldar a malha, e não apenas validá-la."""
 

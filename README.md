@@ -21,10 +21,14 @@ python main.py
   recalcular o casco. O painel avisa quando o formulário está à frente da malha.
 - O **raio mínimo** é o raio real da curvatura da quilha na seção mestra:
   valores maiores achatam o fundo, valores menores deixam a quilha mais viva.
-  O limite exibido é geométrico, dado por `(meia-boca² + calado²) / (2 · calado)`.
+  O limite exibido é geométrico: acima da meia-boca, o arco faria a seção
+  estufar além da largura declarada.
 - O **ângulo de proa** afina apenas a entrada de proa e não altera a popa.
-- Importe malhas STL, OBJ, PLY, VTK ou VTP pelo menu **Arquivo > Abrir casco**
-  ou arrastando o arquivo para a janela.
+- Importe malhas STL, OBJ, PLY, VTK, VTP ou arquivos **.3dm do Rhino** pelo
+  menu **Arquivo > Abrir casco** ou arrastando o arquivo para a janela. Do
+  Rhino só entram superfícies com malha de exibição já salva no arquivo, e
+  imagens de referência coladas na cena (comando "Picture") são ignoradas
+  automaticamente, por não fazerem parte do casco.
 - Desloque, rotacione ou redimensione o modelo inteiro no grupo
   **Transformar objeto**. A câmera é preservada a cada operação.
 - Use `Ctrl+Z` e `Ctrl+Y` para desfazer e refazer transformações. O histórico

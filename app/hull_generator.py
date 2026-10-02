@@ -151,7 +151,15 @@ class HullGenerator:
         tangent_y = radius * math.sin(theta_tangent)
         tangent_z = center_z - radius * math.cos(theta_tangent)
         total_length = arc_length + tangent_length
-        concavity_pull = 0.25 * half_width * self.station_concavity
+        # O puxão de concavidade desloca o trecho reto para dentro seguindo
+        # meia onda de seno. Se o deslocamento máximo passar de
+        # ``tangent_span / pi``, a derivada de y some no início do trecho e o
+        # costado dobra sobre si mesmo — visível como uma malha
+        # autointerseccionada. Isso acontece sobretudo com raio próximo do
+        # limite, quando o trecho reto sobra pouco. A margem de 85% evita
+        # tocar esse limite crítico por erro de ponto flutuante.
+        tangent_span = max(0.0, half_width - tangent_y)
+        concavity_pull = self.station_concavity * tangent_span * (0.85 / math.pi)
 
         profile = np.empty((samples, 2), dtype=np.float64)
         for index, position in enumerate(np.linspace(0.0, total_length, samples)):

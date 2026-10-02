@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -18,6 +17,7 @@ from app.hull_generator import HullGenerator
 from app.models.constraints import HullConstraintValidator
 from app.models.transforms import TransformParameters
 from app.models.profiles import DEFAULT_PROFILE, HullProfile
+from app.views.collapsible_section import CollapsibleSection
 
 
 class RangedSpinBox(QDoubleSpinBox):
@@ -183,9 +183,9 @@ class ParameterPanel(QWidget):
         for label in self._row_labels:
             label.setFixedWidth(width)
 
-    def _create_model_group(self) -> QGroupBox:
-        group = QGroupBox("Modelo atual")
-        form = QFormLayout(group)
+    def _create_model_group(self) -> CollapsibleSection:
+        section = CollapsibleSection("Modelo atual", self, expanded=False)
+        form = QFormLayout()
         self._configure_form(form)
         self.model_name = QLabel(DEFAULT_PROFILE.name)
         self.model_kind = QLabel("Gerado no Odisseu")
@@ -194,7 +194,8 @@ class ParameterPanel(QWidget):
         self._add_row(form, "Nome", self.model_name)
         self._add_row(form, "Origem", self.model_kind)
         self._add_row(form, "Geometria", self.model_geometry)
-        return group
+        section.add_layout(form)
+        return section
 
     def _spin_box(
         self,
@@ -214,9 +215,9 @@ class ParameterPanel(QWidget):
         field.setKeyboardTracking(False)
         return field
 
-    def _create_group_1(self) -> QGroupBox:
-        group = QGroupBox("Grupo 1 - Dimensões")
-        form = QFormLayout(group)
+    def _create_group_1(self) -> CollapsibleSection:
+        section = CollapsibleSection("Grupo 1 - Dimensões", self, expanded=True)
+        form = QFormLayout()
         self._configure_form(form)
         profile = DEFAULT_PROFILE
         self.total_length = self._spin_box(profile.total_length, 0.1, 1000.0, " m")
@@ -259,11 +260,12 @@ class ParameterPanel(QWidget):
             "Afilamento da entrada de proa; valores menores deixam a proa mais "
             f"afiada. Não altera a popa. Intervalo: {self.bow_angle.range_description()}.",
         )
-        return group
+        section.add_layout(form)
+        return section
 
-    def _create_group_2(self) -> QGroupBox:
-        group = QGroupBox("Grupo 2 - Restrições")
-        form = QFormLayout(group)
+    def _create_group_2(self) -> CollapsibleSection:
+        section = CollapsibleSection("Grupo 2 - Restrições", self, expanded=True)
+        form = QFormLayout()
         self._configure_form(form)
         profile = DEFAULT_PROFILE
         self.concavity = self._spin_box(profile.concavity, 0.0, 1.0)
@@ -284,11 +286,11 @@ class ParameterPanel(QWidget):
             "Raio de curvatura da quilha na seção mestra. Valores maiores "
             "achatam o fundo; valores menores deixam a quilha mais viva.",
         )
-        return group
+        section.add_layout(form)
+        return section
 
-    def _create_transform_group(self) -> QGroupBox:
-        group = QGroupBox("Transformar objeto")
-        layout = QVBoxLayout(group)
+    def _create_transform_group(self) -> CollapsibleSection:
+        section = CollapsibleSection("Transformar objeto", self, expanded=False)
 
         description = QLabel(
             "Aplique deslocamento, rotação ou escala ao modelo inteiro. "
@@ -296,7 +298,7 @@ class ParameterPanel(QWidget):
         )
         description.setObjectName("secondaryText")
         description.setWordWrap(True)
-        layout.addWidget(description)
+        section.add_widget(description)
 
         form = QFormLayout()
         self._configure_form(form)
@@ -338,7 +340,7 @@ class ParameterPanel(QWidget):
             form, "Escala uniforme", self.uniform_scale,
             "Multiplica todas as dimensões do objeto pelo mesmo fator.",
         )
-        layout.addLayout(form)
+        section.add_layout(form)
 
         self.clear_transform_button = QPushButton("Limpar campos")
         self.clear_transform_button.setToolTip(
@@ -358,8 +360,8 @@ class ParameterPanel(QWidget):
         buttons = QHBoxLayout()
         buttons.addWidget(self.clear_transform_button)
         buttons.addWidget(self.apply_transform_button, 1)
-        layout.addLayout(buttons)
-        return group
+        section.add_layout(buttons)
+        return section
 
     # ------------------------------------------------------------------
     # Transformações
