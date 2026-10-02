@@ -11,24 +11,107 @@ from app.models.constraints import HullConstraintValidator
 from app.models.transforms import TransformParameters, transformation_matrix
 
 
+def closed_surface_report(mesh) -> tuple[int, float]:
+    """Retorna (arestas abertas, volume) após fundir vértices coincidentes."""
+    _, inverse = np.unique(np.round(mesh.vertices, 9), axis=0, return_inverse=True)
+    points = np.round(mesh.vertices, 9)
+    triangles = inverse.ravel()[mesh.triangulated()]
+    triangles = triangles[
+        (triangles[:, 0] != triangles[:, 1])
+        & (triangles[:, 1] != triangles[:, 2])
+        & (triangles[:, 0] != triangles[:, 2])
+    ]
+    edges = np.sort(
+        np.vstack((triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]])),
+        axis=1,
+    )
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    unique_points = np.unique(points, axis=0)
+    corners = unique_points[triangles]
+    volume = np.einsum(
+        "ij,ij->i", corners[:, 0], np.cross(corners[:, 1], corners[:, 2])
+    ).sum() / 6.0
+    return int((counts != 2).sum()), float(volume)
+
+
 class HullGeneratorTests(unittest.TestCase):
     def test_default_mesh_has_expected_topology(self) -> None:
         generator = HullGenerator()
         mesh = generator.generate_mesh()
+        count = generator.points_per_station
 
-        self.assertEqual(mesh.vertices.shape, (64 * 33, 3))
-        self.assertEqual(mesh.faces.shape, ((64 - 1) * 32, 4))
+        self.assertEqual(count, 33 + 2 * 4)
+        self.assertEqual(mesh.vertices.shape, (64 * count, 3))
         self.assertGreaterEqual(int(mesh.faces.min()), 0)
         self.assertLess(int(mesh.faces.max()), len(mesh.vertices))
 
     def test_declared_dimensions_are_reached(self) -> None:
-        generator = HullGenerator(total_length=12.0, beam=4.0, draft=1.8)
+        generator = HullGenerator(total_length=12.0, beam=4.0, draft=1.8, freeboard=1.1)
         mesh = generator.generate_mesh()
 
         np.testing.assert_allclose(np.ptp(mesh.vertices[:, 0]), 12.0)
         np.testing.assert_allclose(np.ptp(mesh.vertices[:, 1]), 4.0)
         np.testing.assert_allclose(mesh.vertices[:, 2].min(), -1.8)
-        np.testing.assert_allclose(mesh.vertices[:, 2].max(), 0.0)
+        np.testing.assert_allclose(mesh.vertices[:, 2].max(), 1.1)
+
+    def test_hull_is_a_closed_outward_surface(self) -> None:
+        for parameters in (
+            {},
+            {"transom_ratio": 0.0},
+            {"deadrise": 30.0, "station_concavity": 1.0},
+            {"stations": 4, "section_points": 5},
+        ):
+            with self.subTest(**parameters):
+                open_edges, volume = closed_surface_report(
+                    HullGenerator(closed_deck=True, **parameters).generate_mesh()
+                )
+                self.assertEqual(open_edges, 0)
+                self.assertGreater(volume, 0.0)
+
+    def test_transom_widens_the_stern_and_adds_volume(self) -> None:
+        pointed = HullGenerator(transom_ratio=0.0, closed_deck=True)
+        transom = HullGenerator(transom_ratio=0.7, closed_deck=True)
+        stern = transom.generate_mesh().vertices[: transom.points_per_station]
+
+        np.testing.assert_allclose(np.ptp(stern[:, 1]), 0.7 * 4.0)
+        self.assertGreater(
+            closed_surface_report(transom.generate_mesh())[1],
+            closed_surface_report(pointed.generate_mesh())[1],
+        )
+
+    def test_open_deck_leaves_only_the_deck_edge_open(self) -> None:
+        generator = HullGenerator(closed_deck=False)
+        mesh = generator.generate_mesh()
+        closed = HullGenerator(closed_deck=True).generate_mesh()
+
+        self.assertEqual(len(closed.faces) - len(mesh.faces), generator.stations - 1)
+        points = np.round(mesh.vertices, 9)
+        unique_points, inverse = np.unique(points, axis=0, return_inverse=True)
+        triangles = inverse.ravel()[mesh.triangulated()]
+        edges = np.sort(
+            np.vstack((triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]])),
+            axis=1,
+        )
+        edges = edges[edges[:, 0] != edges[:, 1]]
+        unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
+        open_edges = unique_edges[counts == 1]
+
+        self.assertGreater(len(open_edges), 0)
+        np.testing.assert_allclose(unique_points[open_edges][..., 2], generator.freeboard)
+
+    def test_deadrise_sets_the_bottom_angle_at_the_keel(self) -> None:
+        generator = HullGenerator(deadrise=20.0, stations=5, section_points=65)
+        vertices = generator.generate_mesh().vertices
+        count = generator.points_per_station
+        midship = vertices[2 * count : 3 * count]
+        keel = midship[count // 2]
+        beside = midship[count // 2 + 1]
+
+        angle = np.degrees(np.arctan2(beside[2] - keel[2], beside[1] - keel[1]))
+        self.assertAlmostEqual(angle, 20.0, delta=1.5)
+        flat = HullGenerator(deadrise=0.0, stations=5, section_points=65).generate_mesh().vertices
+        flat_mid = flat[2 * count : 3 * count]
+        self.assertLess(flat_mid[count // 2 + 1, 2] - flat_mid[count // 2, 2], 0.01)
 
     def test_invalid_dimensions_are_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -43,32 +126,40 @@ class HullGeneratorTests(unittest.TestCase):
             HullGenerator(section_points=32)
         with self.assertRaises(ValueError):
             HullGenerator(section_points=3)
+        with self.assertRaises(ValueError):
+            HullGenerator(freeboard=0.0)
+        with self.assertRaises(ValueError):
+            HullGenerator(transom_ratio=0.99)
+        with self.assertRaises(ValueError):
+            HullGenerator(deadrise=40.0)
 
     def test_longitudinal_resolution_can_be_changed(self) -> None:
-        mesh = HullGenerator(stations=12, section_points=5).generate_mesh()
+        generator = HullGenerator(stations=12, section_points=5)
+        mesh = generator.generate_mesh()
 
-        self.assertEqual(mesh.vertices.shape, (12 * 5, 3))
-        self.assertEqual(mesh.faces.shape, ((12 - 1) * 4, 4))
+        self.assertEqual(mesh.vertices.shape, (12 * generator.points_per_station, 3))
 
-    def test_sections_follow_the_analytic_curve(self) -> None:
-        coarse = HullGenerator(section_points=5).generate_mesh().vertices
-        fine = HullGenerator(section_points=33).generate_mesh().vertices
-        midship = 32
+    def test_finer_sections_follow_the_bottom_curve(self) -> None:
+        def midship_bottom(section_points: int) -> np.ndarray:
+            generator = HullGenerator(stations=5, section_points=section_points)
+            count = generator.points_per_station
+            section = generator.generate_mesh().vertices[2 * count : 3 * count]
+            return section[section[:, 2] <= 1e-12][:, 1:]
 
-        # O ponto a 1/4 da boca existe nas duas malhas e deve coincidir.
-        np.testing.assert_allclose(coarse[midship * 5 + 1], fine[midship * 33 + 8])
-        # A malha fina segue a curva entre esses pontos em vez de uma reta.
-        coarse_chord = 0.5 * (coarse[midship * 5 + 1, 2] + coarse[midship * 5 + 2, 2])
-        self.assertLess(fine[midship * 33 + 12, 2], coarse_chord)
+        coarse = midship_bottom(5)
+        fine = midship_bottom(33)
+        # A malha grossa liga os pontos por retas; a fina segue a curva, que
+        # fica abaixo dessas cordas (seção convexa).
+        coarse = coarse[np.argsort(coarse[:, 0])]
+        chord = np.interp(fine[:, 0], coarse[:, 0], coarse[:, 1])
+        self.assertTrue(np.all(fine[:, 1] <= chord + 1e-9))
+        self.assertGreater(np.max(chord - fine[:, 1]), 0.02)
 
     def test_stations_concentrate_where_the_shape_changes(self) -> None:
-        generator = HullGenerator(stations=64)
-        x = generator.generate_mesh().vertices[::33, 0]
-        spacing = np.diff(x)
+        generator = HullGenerator(stations=64, transom_ratio=0.0)
         adaptive = generator._station_parameters()
         uniform = np.linspace(0.0, 1.0, 64)
 
-        np.testing.assert_allclose(spacing, spacing[::-1], atol=1e-9)
         self.assertLess(
             np.abs(np.diff(generator._longitudinal_fullness(adaptive))).max(),
             0.6 * np.abs(np.diff(generator._longitudinal_fullness(uniform))).max(),

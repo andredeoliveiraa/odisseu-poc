@@ -292,6 +292,10 @@ class MainWindow(QMainWindow):
             bow_angle=design.bow_angle,
             concavity=design.concavity,
             minimum_radius=DEFAULT_MINIMUM_RADIUS,
+            # A amostragem não altera a forma; mantém a escolhida no painel.
+            freeboard=self.parameter_panel.freeboard.value(),
+            transom_ratio=self.parameter_panel.transom_ratio.value(),
+            deadrise=self.parameter_panel.deadrise.value(),
         )
         self._active_profile_name = profile.name
         self.parameter_panel.set_profile_values(

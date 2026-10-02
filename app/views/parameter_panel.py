@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -48,7 +49,9 @@ class ParameterPanel(QWidget):
         layout.addWidget(self._create_model_group())
         self.dimension_group = self._create_group_1()
         self.constraint_group = self._create_group_2()
+        self.shape_group = self._create_shape_group()
         layout.addWidget(self.dimension_group)
+        layout.addWidget(self.shape_group)
         layout.addWidget(self.constraint_group)
 
         self.validation_label = QLabel()
@@ -154,6 +157,39 @@ class ParameterPanel(QWidget):
         form.addRow("Pontos por seção", self.section_points)
         return group
 
+    def _create_shape_group(self) -> QGroupBox:
+        group = QGroupBox("Forma do casco")
+        form = QFormLayout(group)
+        self.freeboard = self._spin_box(1.0, 0.1, 100.0)
+        self.freeboard.setSuffix(" m")
+        self.freeboard.setToolTip("Altura do convés acima da linha d'água.")
+        self.transom_ratio = self._spin_box(0.65, 0.0, 0.95)
+        self.transom_ratio.setSingleStep(0.05)
+        self.transom_ratio.setToolTip(
+            "Largura do espelho de popa como fração da boca. Zero gera popa em ponta."
+        )
+        self.deadrise = self._spin_box(12.0, 0.0, 35.0)
+        self.deadrise.setSuffix("°")
+        self.deadrise.setToolTip(
+            "Ângulo do fundo junto à quilha (pé de caverna). Valores maiores formam um fundo em V."
+        )
+        form.addRow("Borda livre", self.freeboard)
+        form.addRow("Espelho de popa", self.transom_ratio)
+        form.addRow("Pé de caverna", self.deadrise)
+        self.closed_deck = QCheckBox("Fechar convés")
+        self.closed_deck.setToolTip(
+            "Fecha o topo do casco. Marque para exportar uma malha estanque, "
+            "necessária para calcular volume, CFD ou impressão 3D."
+        )
+        # É uma opção de acabamento: redesenha na hora, sem pedir atualização.
+        self.closed_deck.toggled.connect(self._on_closed_deck_toggled)
+        form.addRow(self.closed_deck)
+        return group
+
+    def _on_closed_deck_toggled(self, _checked: bool) -> None:
+        if self._parametric_enabled and self._validate_inputs():
+            self.draw_requested.emit()
+
     def _create_group_2(self) -> QGroupBox:
         group = QGroupBox("Grupo 2 - Restrições")
         form = QFormLayout(group)
@@ -255,6 +291,9 @@ class ParameterPanel(QWidget):
             self.stations,
             self.concavity,
             self.minimum_radius,
+            self.freeboard,
+            self.transom_ratio,
+            self.deadrise,
         )
 
     def _validate_inputs(self, _value: float | None = None) -> bool:
@@ -309,10 +348,13 @@ class ParameterPanel(QWidget):
 
     def reset_defaults(self) -> None:
         """Restaura o conjunto inicial de parâmetros do casco."""
-        defaults = (12.0, 6.0, 4.0, 1.8, 32.0, 64, 0.0, 2.0)
+        defaults = (12.0, 6.0, 4.0, 1.8, 32.0, 64, 0.0, 2.0, 1.0, 0.65, 12.0)
         for field, value in zip(self._parameter_fields(), defaults):
             field.setValue(value)
         self.section_points.setValue(33)
+        self.closed_deck.blockSignals(True)
+        self.closed_deck.setChecked(False)
+        self.closed_deck.blockSignals(False)
         self._validate_inputs()
 
     def set_profile_values(self, profile: HullProfile, stations: int = 64) -> None:
@@ -326,6 +368,9 @@ class ParameterPanel(QWidget):
             stations,
             profile.concavity,
             profile.minimum_radius,
+            profile.freeboard,
+            profile.transom_ratio,
+            profile.deadrise,
         )
         for field, value in zip(self._parameter_fields(), values):
             field.setValue(value)
@@ -335,6 +380,7 @@ class ParameterPanel(QWidget):
         """Evita que parâmetros do gerador sejam confundidos com malhas importadas."""
         self._parametric_enabled = enabled
         self.dimension_group.setEnabled(enabled)
+        self.shape_group.setEnabled(enabled)
         self.constraint_group.setEnabled(enabled)
         self.reset_button.setEnabled(enabled)
         if enabled:

@@ -18,6 +18,14 @@ python main.py
 - **Pontos por seção** define a resolução transversal (padrão 33, ímpar, entre 5
   e 257). As seções são distribuídas de forma adaptativa: há mais seções onde a
   forma do casco muda (transição para proa e popa) e menos na seção média.
+- O casco tem fundo, obras mortas e espelho de popa. Por padrão o convés fica
+  aberto, para ver as seções por dentro. Marque **Fechar convés** para obter
+  uma malha estanque (sem arestas abertas), necessária para cálculos de volume,
+  CFD ou impressão 3D.
+- O grupo **Forma do casco** controla a **borda livre** (altura do convés acima
+  da linha d'água), a largura do **espelho de popa** (fração da boca; 0 gera
+  popa em ponta) e o **pé de caverna** (ângulo do fundo em V junto à quilha). A
+  concavidade controla quão cheio é o bojo. A proa fica em +X e a linha d'água em Z = 0.
 - Escolha um dos 10 perfis navais na barra superior; depois edite seus parâmetros
   livremente no painel antes de atualizar o modelo.
 - A quantidade de linhas longitudinais é mantida separadamente para cada perfil:

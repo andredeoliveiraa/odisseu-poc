@@ -34,6 +34,10 @@ class HullController(QObject):
                 station_concavity=self.parameter_view.concavity.value(),
                 stations=self.parameter_view.stations.value(),
                 section_points=self.parameter_view.section_points.value(),
+                freeboard=self.parameter_view.freeboard.value(),
+                transom_ratio=self.parameter_view.transom_ratio.value(),
+                deadrise=self.parameter_view.deadrise.value(),
+                closed_deck=self.parameter_view.closed_deck.isChecked(),
             )
             result = self.validator.validate(
                 self.generator,
