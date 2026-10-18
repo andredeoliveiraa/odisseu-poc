@@ -74,6 +74,9 @@ class HullViewer(QtInteractor):
             line_width=1,
             name="current-hull",
             smooth_shading=True,
+            # Mantém vivas as arestas de quina, redans e espelho.
+            split_sharp_edges=True,
+            feature_angle=30.0,
         )
 
     def load_mesh(self, file_path: str | Path) -> None:

@@ -21,39 +21,38 @@ class HullController(QObject):
         self.validator = HullConstraintValidator()
         self.generator = HullGenerator()
         self.parameter_view.draw_requested.connect(self.draw)
+        self.parameter_view.live_update_requested.connect(self.draw_live)
 
-    def draw(self) -> None:
-        """Lê o formulário, valida restrições e redesenha o casco."""
+    def draw_live(self) -> None:
+        """Redesenha durante o ajuste dos controles, mantendo a câmera."""
+        self.draw(reset_camera=False, interactive=False)
+
+    def draw(self, reset_camera: bool = True, interactive: bool = True) -> None:
+        """Lê o formulário, valida restrições e redesenha o casco.
+
+        Com ``interactive=False`` (modo ao vivo), erros não abrem diálogos: o
+        painel já os mostra na linha de validação.
+        """
         try:
-            self.generator = HullGenerator(
-                total_length=self.parameter_view.total_length.value(),
-                midship_length=self.parameter_view.midship_length.value(),
-                beam=self.parameter_view.beam.value(),
-                draft=self.parameter_view.draft.value(),
-                bow_angle=self.parameter_view.bow_angle.value(),
-                station_concavity=self.parameter_view.concavity.value(),
-                stations=self.parameter_view.stations.value(),
-                section_points=self.parameter_view.section_points.value(),
-                freeboard=self.parameter_view.freeboard.value(),
-                transom_ratio=self.parameter_view.transom_ratio.value(),
-                deadrise=self.parameter_view.deadrise.value(),
-                closed_deck=self.parameter_view.closed_deck.isChecked(),
-            )
+            self.generator = HullGenerator(**self.parameter_view.generator_options())
             result = self.validator.validate(
                 self.generator,
                 self.parameter_view.concavity.value(),
                 self.parameter_view.minimum_radius.value(),
             )
         except ValueError as error:
-            QMessageBox.warning(self.parameter_view, "Parâmetros inválidos", str(error))
+            if interactive:
+                QMessageBox.warning(self.parameter_view, "Parâmetros inválidos", str(error))
             return
 
         if not result.valid:
-            QMessageBox.warning(self.parameter_view, "Curvatura inválida", result.message)
+            if interactive:
+                QMessageBox.warning(self.parameter_view, "Curvatura inválida", result.message)
             return
 
         self.viewer.set_hull(self.generator.generate_mesh())
-        self.viewer.reset_camera()
+        if reset_camera:
+            self.viewer.reset_camera()
         self.viewer.render()
         self.hull_generated.emit()
         self.viewer.status_message.emit("Casco recalculado com sucesso")

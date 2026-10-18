@@ -7,7 +7,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
     QGridLayout,
-    QGroupBox,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from app.models.attributes import ATTRIBUTE_MODELS, ATTRIBUTE_THRESHOLD
 from app.models.sampling import SampledDesign
+from app.views.controls import Section
 
 
 class AttributePanel(QWidget):
@@ -52,9 +52,12 @@ class AttributePanel(QWidget):
         layout.addWidget(self._create_sampling_group())
         layout.addStretch()
 
-    def _create_score_group(self) -> QGroupBox:
-        group = QGroupBox("Avaliação do casco atual")
-        grid = QGridLayout(group)
+    def _create_score_group(self) -> Section:
+        group = Section("Avaliação do casco atual", self)
+        holder = QWidget()
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 0, 0, 0)
+        group.add_widget(holder)
         grid.setColumnStretch(1, 1)
         self._score_bars: dict[str, QProgressBar] = {}
         self._score_labels: dict[str, QLabel] = {}
@@ -77,9 +80,12 @@ class AttributePanel(QWidget):
         grid.addWidget(self.expressed_label, len(ATTRIBUTE_MODELS), 0, 1, 3)
         return group
 
-    def _create_sampling_group(self) -> QGroupBox:
-        group = QGroupBox("Gerar cascos por atributo")
-        layout = QVBoxLayout(group)
+    def _create_sampling_group(self) -> Section:
+        group = Section("Gerar cascos por atributo", self)
+        holder = QWidget()
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        group.add_widget(holder)
 
         hint = QLabel(
             "Escolha um ou mais atributos. O S-TLBO amostra projetos distintos "

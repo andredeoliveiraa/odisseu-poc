@@ -30,7 +30,20 @@ python main.py
   livremente no painel antes de atualizar o modelo.
 - A quantidade de linhas longitudinais é mantida separadamente para cada perfil:
   alterar a resolução de um casco não altera os demais.
-- Use **Atualizar modelo 3D** para recalcular o casco.
+- O painel é dividido em abas, com controles de barra deslizante e campo
+  numérico. Com **Atualizar ao vivo** marcado, o casco é redesenhado enquanto
+  os controles são ajustados, sem mover a câmera.
+  - **Casco:** dimensões, forma (borda livre, espelho, pé de caverna,
+    concavidade), malha e restrições.
+  - **Ajuste:** abaulamento do convés, curvatura do espelho para ré, abertura
+    das obras mortas e altura do convés (tosamento) na proa e na popa.
+  - **Quina:** quina viva (hard chine) ligável, com altura na proa e na popa
+    (% do pontal), largura e ângulo do flat da quina.
+  - **Redans:** até 3 degraus no fundo, cada um ligável, com posição (% do
+    comprimento a partir da proa), altura na quilha e na quina, ângulo com a
+    linha de estação e arco. Exigem quina.
+  - **Objeto:** deslocar, girar e escalar o modelo inteiro.
+- Use **Atualizar modelo 3D** para recalcular o casco e reenquadrar a câmera.
 - Importe malhas STL, OBJ, PLY, VTK ou VTP pelo menu **Arquivo > Abrir casco**
   ou arrastando o arquivo para a janela.
 - Desloque, rotacione ou redimensione o modelo inteiro no grupo
