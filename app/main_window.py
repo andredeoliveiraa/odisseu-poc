@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from app.commands.mesh_commands import TransformMeshCommand
 from app.controllers.hull_controller import HullController
+from app.controllers.performance_controller import PerformanceController
 from app.models.attributes import ATTRIBUTES_BY_KEY, evaluate_attributes
 from app.models.sampling import DEFAULT_MINIMUM_RADIUS, AttributeSampler, SampledDesign
 from app.models.transforms import TransformParameters, transformation_matrix
@@ -35,6 +36,7 @@ from app.models.profiles import HULL_PROFILES, HullProfile
 from app.visualization import HullViewer
 from app.views.attribute_panel import AttributePanel
 from app.views.parameter_panel import ParameterPanel
+from app.views.performance_panel import PerformancePanel
 
 
 class MainWindow(QMainWindow):
@@ -102,9 +104,16 @@ class MainWindow(QMainWindow):
         self.attribute_dock.setWidget(attribute_scroll)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.attribute_dock)
         self.tabifyDockWidget(self.parameter_dock, self.attribute_dock)
+
+        self.performance_panel = PerformancePanel(self)
+        self.performance_dock = self._scroll_dock(
+            "Desempenho", "performanceDock", self.performance_panel
+        )
+        self.tabifyDockWidget(self.attribute_dock, self.performance_dock)
         self.parameter_dock.raise_()
 
         self.controller = HullController(self.viewer, self.parameter_panel)
+        self.performance = PerformanceController(self.performance_panel)
         self.undo_stack = QUndoStack(self)
         self.controller.hull_generated.connect(self._on_parametric_hull_generated)
         self.parameter_panel.transform_requested.connect(self._apply_transform)
@@ -121,6 +130,23 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             "Pronto · ajuste os parâmetros ou arraste uma malha 3D para a janela"
         )
+
+    def _scroll_dock(self, title: str, name: str, widget) -> QDockWidget:
+        """Cria um painel lateral com rolagem vertical."""
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(widget)
+        dock = QDockWidget(title, self)
+        dock.setObjectName(name)
+        dock.setMinimumWidth(340)
+        dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        dock.setWidget(scroll)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        return dock
 
     def _create_actions(self) -> None:
         """Cria ações reutilizadas pelos menus e pela barra de ferramentas."""
@@ -169,6 +195,20 @@ class MainWindow(QMainWindow):
         )
         self.fit_view_action.triggered.connect(self._fit_view)
 
+        # As cinco vistas padronizadas do conjunto ShipD.
+        self.standard_view_actions = []
+        for label, shortcut, handler in (
+            ("Vista frontal", "1", self.viewer.view_front),
+            ("Vista de perfil", "2", self.viewer.view_profile),
+            ("Vista em planta", "3", self.viewer.view_plan),
+            ("Três-quartos: proa a boreste", "4", self.viewer.view_bow_quarter),
+            ("Três-quartos: popa a bombordo", "5", self.viewer.view_stern_quarter),
+        ):
+            action = QAction(label, self)
+            action.setShortcut(shortcut)
+            action.triggered.connect(handler)
+            self.standard_view_actions.append(action)
+
         self.quit_action = QAction("Sair", self)
         self.quit_action.setShortcut("Ctrl+Q")
         self.quit_action.triggered.connect(self.close)
@@ -193,8 +233,12 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.reset_view_action)
         view_menu.addAction(self.fit_view_action)
         view_menu.addSeparator()
+        for action in self.standard_view_actions:
+            view_menu.addAction(action)
+        view_menu.addSeparator()
         view_menu.addAction(self.parameter_dock.toggleViewAction())
         view_menu.addAction(self.attribute_dock.toggleViewAction())
+        view_menu.addAction(self.performance_dock.toggleViewAction())
 
         help_menu = self.menuBar().addMenu("Ajuda")
         help_menu.addAction(self.about_action)
@@ -342,6 +386,10 @@ class MainWindow(QMainWindow):
         self._model_kind = f"Malha {file_path.suffix[1:].upper()} importada"
         self.undo_stack.clear()
         self.parameter_panel.set_parametric_enabled(False)
+        self.performance.clear(
+            "O desempenho é calculado para o casco paramétrico. "
+            "Use “Novo casco” para voltar a ele."
+        )
         self.viewer.reset_camera()
         self.viewer.render()
         self._refresh_model_info()
@@ -407,6 +455,7 @@ class MainWindow(QMainWindow):
         self._model_kind = "Gerado no Odisseu"
         self.undo_stack.clear()
         self.parameter_panel.set_parametric_enabled(True)
+        self.performance.update_hull(self.controller.generator)
         self._refresh_model_info()
 
     def _apply_transform(self, parameters: TransformParameters) -> None:

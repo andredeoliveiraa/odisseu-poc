@@ -98,6 +98,11 @@ QLabel#panelTitle {
 QLabel#secondaryText {
     color: #aab4bf;
 }
+QLabel#monoTable {
+    font-family: "Consolas", "Cascadia Mono", monospace;
+    font-size: 9pt;
+    color: #c9d1d9;
+}
 QLabel#modeHint {
     background-color: #302a1e;
     border: 1px solid #725d2c;

@@ -128,6 +128,34 @@ class HullViewer(QtInteractor):
             return self._current_mesh.copy(deep=True)
         return self._current_mesh.extract_surface()
 
+    def _look_from(self, direction: tuple[float, float, float], up: tuple[float, float, float]) -> None:
+        """Olha para o centro do modelo a partir de ``direction`` e enquadra tudo."""
+        if self._current_mesh is None:
+            return
+        center = np.asarray(self._current_mesh.center, dtype=float)
+        offset = np.asarray(direction, dtype=float)
+        offset /= np.linalg.norm(offset)
+        self.camera_position = [tuple(center + 10.0 * offset), tuple(center), up]
+        self.reset_camera()
+        self.render()
+
+    # As cinco vistas padronizadas do conjunto ShipD. Proa em +X, boreste em +Y.
+    def view_front(self) -> None:
+        self._look_from((1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+
+    def view_profile(self) -> None:
+        # Vista por bombordo: a proa fica à direita, como no plano de linhas.
+        self._look_from((0.0, -1.0, 0.0), (0.0, 0.0, 1.0))
+
+    def view_plan(self) -> None:
+        self._look_from((0.0, 0.0, 1.0), (0.0, 1.0, 0.0))
+
+    def view_bow_quarter(self) -> None:
+        self._look_from((1.0, 0.8, 0.5), (0.0, 0.0, 1.0))
+
+    def view_stern_quarter(self) -> None:
+        self._look_from((-1.0, -0.8, 0.5), (0.0, 0.0, 1.0))
+
     def clear_model(self) -> None:
         """Remove a geometria carregada, preservando a cena de visualização."""
         self.remove_actor("current-hull")

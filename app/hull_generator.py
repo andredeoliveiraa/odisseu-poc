@@ -508,13 +508,24 @@ class HullGenerator:
             chine[: aft_row + 1] += step.height_chine
         return keel, chine
 
+    def half_sections(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Meias-seções (boreste) do convés até a quilha, por estação.
+
+        Retorna ``x``, ``y`` e ``z`` com forma ``(estações, pontos)``. É a
+        mesma geometria usada na malha, exposta para cálculos de hidrostática
+        e resistência.
+        """
+        grid, aft_rows = self._station_grid()
+        keel_raise, chine_raise = self._step_raises(grid.shape[0], aft_rows)
+        half_y, half_z = self._half_section(grid, keel_raise, chine_raise)
+        half_x = (np.broadcast_to(grid, half_y.shape) - 0.5) * self.total_length
+        return half_x, half_y, half_z
+
     def generate_mesh(self) -> HullMesh:
         """Calcula vértices e faces do casco."""
-        grid, aft_rows = self._station_grid()
-        row_count = grid.shape[0]
-        keel_raise, chine_raise = self._step_raises(row_count, aft_rows)
-        half_y, half_z = self._half_section(grid, keel_raise, chine_raise)
-        half_t = np.broadcast_to(grid, half_y.shape)
+        half_x, half_y, half_z = self.half_sections()
+        row_count = half_y.shape[0]
+        half_t = half_x / self.total_length + 0.5
 
         # Bombordo (y < 0) do convés até a quilha, depois boreste até o convés.
         section_y = np.hstack((-half_y, half_y[:, -2::-1]))

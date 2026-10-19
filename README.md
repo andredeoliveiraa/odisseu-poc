@@ -44,6 +44,32 @@ python main.py
     linha de estação e arco. Exigem quina.
   - **Objeto:** deslocar, girar e escalar o modelo inteiro.
 - Use **Atualizar modelo 3D** para recalcular o casco e reenquadrar a câmera.
+- O menu **Visualizar** tem as cinco vistas padronizadas do conjunto ShipD:
+  frontal (`1`), perfil (`2`, proa à direita), planta (`3`), três-quartos pela
+  proa a boreste (`4`) e três-quartos pela popa a bombordo (`5`).
+
+## Desempenho
+
+A aba **Desempenho** segue o método de avaliação do artigo *Ship-D: Ship Hull
+Dataset for Design Optimization using Machine Learning* (Bagazinski e Ahmed,
+2023):
+
+- **Hidrostática** na linha d'água (z = 0): volume, deslocamento, LWL, BWL,
+  calado, superfície molhada, área de flutuação, Cb, Cp, Cm, Cw, LCB, LCF e KM.
+  É calculada sobre a própria malha, recortando-a na linha d'água e aplicando o
+  teorema da divergência, o que é exato para um poliedro.
+- **Resistência ao avanço** `Rt = Rw + Rf` de Fn 0,15 a 0,45 (a faixa do
+  artigo) e na velocidade de projeto escolhida: ondas pela integral de Michell
+  e atrito pela linha ITTC-57, `Cf = 0,075 / (log10 Re − 2)²`. O gráfico mostra
+  as três parcelas e a potência efetiva ao passar o mouse; a tabela da curva
+  traz os mesmos valores em texto.
+- A curva é calculada em segundo plano; a hidrostática atualiza na hora.
+
+A integral de Michell é uma teoria de navio delgado em regime de deslocamento.
+Para cascos largos (L/B abaixo de ≈6) ou acima de Fn ≈ 0,5 o painel avisa que o
+valor é indicativo: serve para comparar formas, não como previsão absoluta. A
+implementação foi validada no casco de Wigley (hidrostática exata e
+convergência da integral) em `tests/test_hydrodynamics.py`.
 - Importe malhas STL, OBJ, PLY, VTK ou VTP pelo menu **Arquivo > Abrir casco**
   ou arrastando o arquivo para a janela.
 - Desloque, rotacione ou redimensione o modelo inteiro no grupo
