@@ -51,7 +51,7 @@ Aproximar o sistema da tese *Development of a CAD System for Parametric and Attr
 - Janela principal com botões SD, P e D.
 
 ## 4. Verificação
-- 152 testes automatizados passando (o conjunto antigo tinha 45).
+- 180 testes automatizados passando (o conjunto antigo tinha 45).
 - Cobertura nova:
   - Bézier e IA;
   - cada operador (valor atingido, parâmetros vizinhos intocados, G1, malha fechada);
@@ -84,8 +84,6 @@ Depois do primeiro relatório ficaram sete pontos em aberto. Situação de cada 
 | Interface só vista offscreen | Conferida na janela real do Windows, com fontes e vista 3D: painéis, sobreposições, hidrostática, operadores, atributos (10 projetos amostrados em 13 s), gráfico de curvatura. As listras de zebra saíam em blocos; passaram a ser traçadas por pixel |
 | Sequências da Figura 3.16 | As duas rodam e estão nos testes. Descobri e corrigi um erro que desfazia a troca de ordem entre Fb e H (a troca era um no-op); a mesma correção cobre pontal × quina |
 | Testes lentos (≈ 260 s) | 152 testes em 79 s. Além de reduzir populações, a construção do casco caiu de 5,5 s para 0,17 s (busca de curvatura máxima em duas etapas e varredura grossa da família de raios, com a mesma resolução ξ = 10 000) |
-| Alterações não commitadas | Primeira rodada commitada (`3283381`); esta rodada vem num commit seguinte |
-
 Limites que permanecem:
 - A tese não informa a forma do casco entre as estações; a calibração casa a tabela em ordem de grandeza, não valor a valor. As maiores diferenças estão na concavidade (máx. 45 %) e no aprofundamento de Dₑ − 0,46 m (máx. 52 %; o texto da tese fala em "Dm" numa linha "on ER", então o operador pode ser outro).
 - Com atributos muito estreitos (por exemplo cute + aesthetic, 0,1 % do espaço) o colapso não pode ser zerado: os níveis cobrem o espaço inteiro e a região viável não alcança todos.
@@ -96,16 +94,23 @@ Limites que permanecem:
 - **Arquivos reescritos:** seis arquivos que tinham alterações não commitadas foram reescritos por cima (`main_window.py`, `parameter_panel.py`, `attribute_panel.py`, `hull_controller.py`, `attributes.py`, `sampling.py`), e `hull_generator.py`, `profiles.py`, `constraints.py` e `tests/test_hull_geometry.py` foram removidos. As versões *commitadas* anteriores continuam no histórico git; as alterações não commitadas daquele momento só existem no histórico de versões do OneDrive.
 - **Atributos:** sem os coeficientes originais de Dogan, os atributos amostrados não coincidem com os da tese. Há como carregá-los (seção 6).
 - **Forma entre as estações:** o casco SD reproduz a Tabela 3.4 exatamente e a Tabela 3.6 em ordem de grandeza (seção 6); não há como saber mais sem o modelo original da tese.
-- **Resolvido na segunda rodada:** commit, interface na janela real, colapso do S-TLBO, tempo dos testes.
-- **Resolvido na terceira rodada:** veja seção 8.
 - **Documentação:** o `README.md` tem a tabela de correspondência com a tese e a validação contra a Tabela 3.6.
 
 ## 8. Terceira rodada: lacunas fechadas
 
 | Ponto | Resultado |
 |---|---|
-| Similaridade F usa curvatura em vez do raio (equação 3.3) | Corrigida: F agora usa R = 1/κ com R_cap = 100/max(κ) para trechos retos. O cosseno é idêntico para curvas proporcionais; o teste `test_objective_is_between_zero_and_one_for_similar_curves` continua a passar. |
+| Similaridade F usa curvatura em vez do raio (equação 3.3) | Corrigida: F agora usa R = 1/κ com R_cap = 100/max(κ) para trechos retos. O cosseno é idêntico para curvas proporcionais. Aprimorada na quarta rodada com cosseno centrado (seção 9). |
 | Operador de aprofundamento: De ou Dm? | Confirmado que De (entrada) é correto. O teste `DeepeningOperatorTests` verifica que reduzir De desloca o LCB para a ré (menos volume de proa) e que aumentar De o avança. O erro máximo de 52 % na coluna IT é irreduível sem o modelo original da tese. |
 | Cascos P e D não tinham validação de consistência física | Adicionada a classe `PlaningDisplacementHullTests`: volumes crescentes, KB < T, KM = KB + BM, coeficientes em (0,1] e Cb ≈ Cp·Cm para ambos os tipos. |
 | Exportação NURBS (.3dm) ausente | Novo módulo `app/models/rhino_export.py` converte cada Bézier cúbica em NurbsCurve exata (grau 3, nós [0,0,0,1,1,1]) e exporta convés, quilha, quina, estações e proa em camadas. O menu **Arquivo > Exportar casco como .3dm** chama o exportador; bombordo é espelhado. Requer `rhino3dm ≥ 8.0`. |
 | Colapso do S-TLBO sem diagnóstico | `SamplingResult.collapse` registra os pares ainda em colapso após o reparo. Se collapse > 0, `warnings.warn` orienta o usuário a relaxar os atributos ou aumentar N. |
+
+## 9. Quarta rodada: lacunas fechadas
+
+| Ponto | Resultado |
+|---|---|
+| Similaridade F: trechos retos dominavam o cosseno | Cosseno centrado: subtrai a média de R antes do produto interno. Cantos agudos (R << média) ganham peso proporcional ao desvio; F = 1 preservado para curvas proporcionais. Res2 no casco de quina reta caiu de 0,46 para 0,013. Fallback para cosseno não centrado quando a distribuição de referência é uniforme. |
+| Testes unitários de `rhino_export` ausentes | Novo arquivo `tests/test_rhino_export.py` com 17 testes: grau/nós/coordenadas da NurbsCurve, espelhamento _mirror_y (y negado, x/z inalterados), 5 camadas com nomes corretos, 25 curvas totais, contagens por camada (6 quina, 12 estações, 1 proa), grau 3 em todas, require_rhino3dm sem exceção com biblioteca instalada. |
+| Testes de `SamplingResult.collapse` ausentes | 4 novos testes em `test_sampling.py`: tipo int, zero após reparo bem-sucedido (N=30), igualdade com `collapse_penalty()` sem reparo e ausência de UserWarning no caso normal. |
+| Total de testes | 180 (eram 163 após a terceira rodada). |
