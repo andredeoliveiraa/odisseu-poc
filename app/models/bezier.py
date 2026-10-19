@@ -171,19 +171,23 @@ def _max_curvature(controls: np.ndarray, samples: int) -> np.ndarray:
 
 
 def similarity(reference: np.ndarray, candidates: np.ndarray) -> np.ndarray:
-    """Função objetivo ``F``: cosseno entre as distribuições de curvatura.
+    """Função objetivo ``F``: cosseno entre as distribuições de raio de curvatura.
 
-    A tese escreve ``F`` sobre os raios de curvatura. Aqui o cosseno é feito
-    sobre as curvaturas ``κ = 1/R``, que carregam a mesma informação de forma
-    sem o ``R → ∞`` dos trechos retos; ``F`` continua entre 0 e 1 e vale 1 para
-    curvas de mesma forma, qualquer que seja a escala.
+    Segue a equação 3.3 da tese, que usa raios R = 1/κ. Os trechos retos
+    (κ ≈ 0) recebem o raio ``R_cap = 100 / max(κ_referência)`` para evitar
+    R → ∞; F continua em [0, 1] e vale 1 para curvas de mesma forma.
+    Quando a referência é inteiramente reta, usa-se a curvatura como proxy.
     """
-    reference_norm = np.linalg.norm(reference)
-    norms = np.linalg.norm(candidates, axis=1)
-    if reference_norm < 1e-9:
+    max_kappa = float(np.max(reference))
+    if max_kappa < 1e-9:
         # Referência reta: a melhor candidata é a menos curva.
-        return -norms
-    return (candidates @ reference) / (np.maximum(norms, _EPSILON) * reference_norm)
+        return -np.linalg.norm(candidates, axis=1)
+    r_cap = 100.0 / max_kappa
+    ref_r = np.where(reference > 1e-9, 1.0 / np.maximum(reference, 1e-100), r_cap)
+    cand_r = np.where(candidates > 1e-9, 1.0 / np.maximum(candidates, 1e-100), r_cap)
+    ref_norm = float(np.linalg.norm(ref_r))
+    cand_norms = np.linalg.norm(cand_r, axis=1)
+    return (cand_r @ ref_r) / (np.maximum(cand_norms, _EPSILON) * ref_norm)
 
 
 def refit_curve(

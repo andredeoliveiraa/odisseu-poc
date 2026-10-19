@@ -48,6 +48,7 @@ from app.models.nurbs_surface import (
 )
 from app.models.sampling import SampledDesign
 from app.models.transforms import TransformParameters, transformation_matrix
+from app.models.rhino_export import RhinoExportError, export_hull_as_3dm
 from app.rhino_import import RhinoImportReport, read_3dm_as_polydata
 from app.views.attribute_panel import AttributePanel
 from app.views.curvature_dialog import CurvatureDialog
@@ -231,6 +232,12 @@ class MainWindow(QMainWindow):
         )
         self.export_hydrostatics_action.triggered.connect(self._export_hydrostatics)
 
+        self.export_3dm_action = QAction("Exportar casco como .3dm (Rhino)...", self)
+        self.export_3dm_action.setStatusTip(
+            "Exporta as curvas características do casco paramétrico como NURBS em .3dm"
+        )
+        self.export_3dm_action.triggered.connect(self._export_hull_as_3dm)
+
         self.edit_nurbs_action = QAction("Editar superfície NURBS...", self)
         self.edit_nurbs_action.setStatusTip(
             "Abre um .3dm e edita uma superfície pelos pontos de controle"
@@ -332,6 +339,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.open_action)
         file_menu.addAction(self.export_action)
         file_menu.addAction(self.export_hydrostatics_action)
+        file_menu.addAction(self.export_3dm_action)
         file_menu.addSeparator()
         file_menu.addAction(self.edit_nurbs_action)
         file_menu.addAction(self.finish_nurbs_action)
@@ -728,7 +736,53 @@ class MainWindow(QMainWindow):
             self._show_status("Falha ao exportar o modelo")
             return
 
-        self._show_status(f"“{output_path.name}” foi exportado com sucesso")
+        self._show_status(f'”{output_path.name}” foi exportado com sucesso')
+
+    def _export_hull_as_3dm(self) -> None:
+        # Exporta as curvas NURBS do casco parametrico atual como .3dm.
+        model = self.controller.model
+        if model is None:
+            QMessageBox.information(
+                self,
+                'Sem casco parametrico',
+                'Carregue ou gere um casco parametrico antes de exportar.',
+            )
+            return
+
+        default_name = f'{self._model_name}_casco.3dm'
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Exportar casco como .3dm',
+            default_name,
+            'Rhino 3D (*.3dm)',
+        )
+        if not file_path:
+            return
+
+        output_path = Path(file_path)
+        if output_path.suffix.lower() != '.3dm':
+            output_path = output_path.with_suffix('.3dm')
+
+        try:
+            export_hull_as_3dm(model, output_path)
+        except RhinoExportError as error:
+            self._show_error(
+                'Nao foi possivel exportar',
+                str(error),
+                error,
+            )
+            self._show_status('Falha ao exportar .3dm')
+            return
+        except Exception as error:
+            self._show_error(
+                'Erro inesperado na exportacao',
+                f'O casco nao pode ser salvo em {output_path.name!r}.',
+                error,
+            )
+            self._show_status('Falha ao exportar .3dm')
+            return
+
+        self._show_status(f'”{output_path.name}” exportado com sucesso')
 
     @classmethod
     def _path_with_selected_extension(cls, path: Path, selected_filter: str) -> Path:

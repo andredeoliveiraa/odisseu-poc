@@ -60,8 +60,9 @@ curvas que se movem para maximizar a similaridade `F` entre as distribuições d
 curvatura da curva de entrada e da modificada, com ξ = 1000 e µ = 15) e
 **modificação independente** dos parâmetros.
 
-A curvatura é comparada por `κ = 1/R` e não pelo raio `R` (como escreve a tese):
-o cosseno é o mesmo em intenção, mas evita o `R → ∞` dos trechos retos.
+A similaridade `F` segue a equação 3.3 da tese: cosseno entre as distribuições de
+raio de curvatura `R = 1/κ`. Trechos retos (`κ ≈ 0`) recebem `R_cap = 100/max(κ)`
+para evitar `R → ∞` sem alterar a intenção da métrica.
 
 ### Inspeção de qualidade (Figuras 3.14 e 3.15)
 
@@ -150,6 +151,11 @@ variáveis padronizadas.
   imagens de referência coladas na cena (comando "Picture") são ignoradas. A
   unidade do .3dm é mostrada no painel e na grade cotada. A pasta `exemplos/`
   traz um STL para experimentar.
+- **Arquivo > Exportar casco como .3dm (Rhino)...** exporta as curvas
+  características do casco paramétrico como NURBS exatas: convés, quilha, quina
+  (bombordo e boreste), estações e roda de proa, em camadas separadas. Cada Bézier
+  cúbica vira uma `NurbsCurve` de grau 3 com nós `[0,0,0,1,1,1]`. Requer
+  `pip install rhino3dm`.
 - Desloque, rotacione ou redimensione o modelo inteiro em **Transformar
   objeto**; `Ctrl+Z` e `Ctrl+Y` desfazem e refazem (20 operações).
 - Exporte o modelo visível em STL, PLY, VTK ou VTP. **Fechar convés** (em
@@ -179,7 +185,8 @@ variáveis padronizadas.
 Diferenças deliberadas: coordenadas com `x` ao longo do comprimento, `y` na boca
 e `z` na vertical (a tese usa `Z` no comprimento); `K` é a meia-largura do painel
 plano da quilha; as espessuras de quina e de quilha são ramificadas de forma
-suave entre as estações; o raio de curvatura é comparado via curvatura; o
+suave entre as estações; trechos retos na similaridade `F` recebem raio-limite
+`R_cap` em vez de `R = ∞` para manter o cosseno finito; o
 S-TLBO usa uma "paciência" de iterações (a tese para após duas) porque as
 penalidades α e β são discretas; a penalidade por restrição violada soma uma fração pequena do *grau* da violação, só para desempatar projetos inviáveis (a contagem pura é plana e deixa os alunos sem direção); e "110 ≤ β ≤ 80" do participante 3 (Tabela
 4.1, impossível) foi lido como 80 ≤ β ≤ 120.

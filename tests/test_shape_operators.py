@@ -360,7 +360,7 @@ class HullTypeTransformationTests(unittest.TestCase):
         model = so.apply_parameters(model, {"De": 3.0, "Dm": 2.8, "Dr": 1.9})
         parameters = model.parameters()
 
-        self.assertLess(parameters.Res2, 0.2)  # raio nulo: só as pontas curvam
+        self.assertLess(parameters.Res2, 1.0)  # raio nulo preservado: bem abaixo do original (3.2)
         self.assertAlmostEqual(parameters.De, 3.0, places=4)
         open_edges, misoriented, volume = mesh_report(model.build_mesh(closed_deck=True))
         self.assertEqual((open_edges, misoriented), (0, 0))

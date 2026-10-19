@@ -63,7 +63,7 @@ Aproximar o sistema da tese *Development of a CAD System for Parametric and Attr
 
 ## 5. Diferenças deliberadas em relação à tese
 1. **Atributos:** os coeficientes de Dogan estão truncados na Figura 5.6. Usei um modelo substituto com a mesma estrutura e o mesmo limiar de 0,5.
-2. **Similaridade F:** calculada sobre a curvatura e não sobre o raio, para evitar o infinito nos trechos retos.
+2. **Similaridade F:** os trechos retos (κ ≈ 0) recebem raio-limite R_cap = 100/max(κ) em vez de R = ∞; a métrica usa raios conforme a equação 3.3 da tese.
 3. **Penalidade do S-TLBO:** a contagem de restrições violadas ganhou um termo pequeno de desempate pelo grau da violação.
 4. **Parada do S-TLBO:** a paciência é maior que as duas iterações da tese, por causa das penalidades discretas.
 5. **Colapso:** a busca principal deixava cerca de 18 de 30 projetos em colapso; uma etapa final de reparo zera o colapso (N = 30, sem restrições) com U₁ ≈ 233–242, contra 241,78 na tese. Com atributos muito restritivos o colapso pode permanecer.
@@ -97,4 +97,15 @@ Limites que permanecem:
 - **Atributos:** sem os coeficientes originais de Dogan, os atributos amostrados não coincidem com os da tese. Há como carregá-los (seção 6).
 - **Forma entre as estações:** o casco SD reproduz a Tabela 3.4 exatamente e a Tabela 3.6 em ordem de grandeza (seção 6); não há como saber mais sem o modelo original da tese.
 - **Resolvido na segunda rodada:** commit, interface na janela real, colapso do S-TLBO, tempo dos testes.
+- **Resolvido na terceira rodada:** veja seção 8.
 - **Documentação:** o `README.md` tem a tabela de correspondência com a tese e a validação contra a Tabela 3.6.
+
+## 8. Terceira rodada: lacunas fechadas
+
+| Ponto | Resultado |
+|---|---|
+| Similaridade F usa curvatura em vez do raio (equação 3.3) | Corrigida: F agora usa R = 1/κ com R_cap = 100/max(κ) para trechos retos. O cosseno é idêntico para curvas proporcionais; o teste `test_objective_is_between_zero_and_one_for_similar_curves` continua a passar. |
+| Operador de aprofundamento: De ou Dm? | Confirmado que De (entrada) é correto. O teste `DeepeningOperatorTests` verifica que reduzir De desloca o LCB para a ré (menos volume de proa) e que aumentar De o avança. O erro máximo de 52 % na coluna IT é irreduível sem o modelo original da tese. |
+| Cascos P e D não tinham validação de consistência física | Adicionada a classe `PlaningDisplacementHullTests`: volumes crescentes, KB < T, KM = KB + BM, coeficientes em (0,1] e Cb ≈ Cp·Cm para ambos os tipos. |
+| Exportação NURBS (.3dm) ausente | Novo módulo `app/models/rhino_export.py` converte cada Bézier cúbica em NurbsCurve exata (grau 3, nós [0,0,0,1,1,1]) e exporta convés, quilha, quina, estações e proa em camadas. O menu **Arquivo > Exportar casco como .3dm** chama o exportador; bombordo é espelhado. Requer `rhino3dm ≥ 8.0`. |
+| Colapso do S-TLBO sem diagnóstico | `SamplingResult.collapse` registra os pares ainda em colapso após o reparo. Se collapse > 0, `warnings.warn` orienta o usuário a relaxar os atributos ou aumentar N. |

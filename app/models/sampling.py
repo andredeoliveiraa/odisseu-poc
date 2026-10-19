@@ -19,6 +19,7 @@ variação do custo entre duas iterações consecutivas se torna desprezível.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -187,6 +188,8 @@ class SamplingResult:
     cost: float
     cost_history: list[float]
     iterations: int
+    collapse: int = 0
+    """Pares de coordenadas ainda em colapso após a etapa de reparo (U₂ > 0)."""
 
     @property
     def feasible(self) -> list[bool]:
@@ -343,6 +346,16 @@ class STLBO:
             self._repair_collapse(teachers, count)
             history.append(self.total_cost(teachers))
 
+        final_collapse = int(collapse_penalty(teachers))
+        if self.repair and final_collapse > 0:
+            warnings.warn(
+                f"S-TLBO: {final_collapse} par(es) de coordenadas ainda em colapso "
+                "após a etapa de reparo. Com restrições de atributo muito estreitas o "
+                "hipercubo latino não consegue cobrir todo o espaço viável. "
+                "Experimente relaxar os atributos ou aumentar N.",
+                stacklevel=3,
+            )
+
         designs = [self.space.as_dict(unit) for unit in teachers]
         return SamplingResult(
             unit_designs=teachers.copy(),
@@ -351,6 +364,7 @@ class STLBO:
             cost=history[-1],
             cost_history=history,
             iterations=iterations,
+            collapse=final_collapse,
         )
 
     # ------------------------------------------------------------------

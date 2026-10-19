@@ -243,5 +243,98 @@ class ThesisTableTests(unittest.TestCase):
             self.assertAlmostEqual(result.KM, result.KB + result.BM)
 
 
+class PlaningDisplacementHullTests(unittest.TestCase):
+    """Consistência física dos cascos iniciais P (planeio) e D (deslocamento).
+
+    Valida que ambos os tipos de casco geram hidrostática coerente: volumes
+    positivos e crescentes, KB < T, KM = KB + BM e coeficientes em (0, 1].
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.planing = initial_hull(PLANING)
+        cls.displacement = initial_hull(DISPLACEMENT)
+
+    def _assert_physical(self, model, label: str) -> None:
+        results = hydrostatic_table(model, default_drafts(model))
+        self.assertEqual(len(results), 3)
+        volumes = [r.V for r in results]
+        self.assertEqual(volumes, sorted(volumes), msg=f"{label}: volume cresce com o calado")
+        self.assertTrue(all(v > 0 for v in volumes), msg=f"{label}: volumes positivos")
+        for result in results:
+            with self.subTest(hull=label, draft=result.T):
+                self.assertTrue(0.0 < result.KB < result.T, msg="0 < KB < T")
+                self.assertAlmostEqual(result.KM, result.KB + result.BM, msg="KM = KB + BM")
+                self.assertAlmostEqual(result.BM, result.IT / result.V, delta=1e-3, msg="BM = IT/V")
+                for name in ("Cp", "Cm", "Cw", "Cb"):
+                    self.assertTrue(
+                        0.0 < getattr(result, name) <= 1.0, msg=f"{label} {name} ∉ (0,1]"
+                    )
+                self.assertAlmostEqual(result.Cb, result.Cp * result.Cm, delta=0.02, msg="Cb ≈ Cp·Cm")
+
+    def test_planing_hull_is_physically_consistent(self) -> None:
+        self._assert_physical(self.planing, "P")
+
+    def test_displacement_hull_is_physically_consistent(self) -> None:
+        self._assert_physical(self.displacement, "D")
+
+    def test_displacement_hull_has_no_chine_thickness(self) -> None:
+        """Casco D tem Ce = Cm = Cr = 0 (quina inexistente, smooth chine)."""
+        params = self.displacement.parameters()
+        for attr in ("Ce", "Cm", "Cr"):
+            self.assertAlmostEqual(
+                getattr(params, attr), 0.0, msg=f"{attr} deve ser 0 no casco D"
+            )
+
+    def test_planing_hull_has_steeper_deadrise_than_sd(self) -> None:
+        """Casco P tem ângulo de deadrise (beta) maior que o SD (casco em V mais fechado)."""
+        sd = initial_hull(SEMI_DISPLACEMENT)
+        self.assertGreater(self.planing.parameters().beta, sd.parameters().beta)
+
+
+class DeepeningOperatorTests(unittest.TestCase):
+    """Operador de aprofundamento age na estação de entrada (De), não na meio (Dm).
+
+    A tese cita 'on ER' (entry region) para o aprofundamento; o deslocamento do
+    LCB quando se altera De confirma que o operador age na região de proa.
+    Medindo LCB a partir da popa: reduzir De remove volume da proa, fazendo o
+    LCB recuar (valor decresce); aumentar De adiciona volume à proa (LCB avança).
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from app.models.shape_operators import apply_parameters
+
+        cls.model = initial_hull(SEMI_DISPLACEMENT)
+        params = cls.model.parameters()
+        cls.deeper = apply_parameters(cls.model, {"De": params.De + 0.46})
+        cls.shallower = apply_parameters(cls.model, {"De": params.De - 0.46})
+
+    def test_shallower_entry_shifts_lcb_aft(self) -> None:
+        """Reduzir De remove volume de proa; LCB (da popa) decresce."""
+        base = hydrostatic_table(self.model, THESIS_DRAFTS)
+        shallow = hydrostatic_table(self.shallower, THESIS_DRAFTS)
+        for b, s in zip(base, shallow):
+            with self.subTest(draft=b.T):
+                self.assertLess(s.LCB, b.LCB)
+
+    def test_deeper_entry_shifts_lcb_forward(self) -> None:
+        """Aumentar De adiciona volume de proa; LCB (da popa) cresce."""
+        base = hydrostatic_table(self.model, THESIS_DRAFTS)
+        deeper = hydrostatic_table(self.deeper, THESIS_DRAFTS)
+        for b, d in zip(base, deeper):
+            with self.subTest(draft=b.T):
+                self.assertGreater(d.LCB, b.LCB)
+
+    def test_deepened_hull_is_physically_consistent(self) -> None:
+        results = hydrostatic_table(self.deeper, THESIS_DRAFTS)
+        for result in results:
+            with self.subTest(draft=result.T):
+                self.assertTrue(0.0 < result.KB < result.T)
+                self.assertAlmostEqual(result.KM, result.KB + result.BM)
+                for name in ("Cp", "Cm", "Cw", "Cb"):
+                    self.assertTrue(0.0 < getattr(result, name) <= 1.0, msg=name)
+
+
 if __name__ == "__main__":
     unittest.main()
