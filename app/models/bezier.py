@@ -171,12 +171,16 @@ def _max_curvature(controls: np.ndarray, samples: int) -> np.ndarray:
 
 
 def similarity(reference: np.ndarray, candidates: np.ndarray) -> np.ndarray:
-    """Função objetivo ``F``: cosseno entre as distribuições de raio de curvatura.
+    """Função objetivo ``F``: cosseno centrado entre as distribuições de raio de curvatura.
 
     Segue a equação 3.3 da tese, que usa raios R = 1/κ. Os trechos retos
     (κ ≈ 0) recebem o raio ``R_cap = 100 / max(κ_referência)`` para evitar
-    R → ∞; F continua em [0, 1] e vale 1 para curvas de mesma forma.
-    Quando a referência é inteiramente reta, usa-se a curvatura como proxy.
+    R → ∞. O cosseno é calculado com distribuições *centradas* (vetor menos
+    sua própria média), dando peso maior a cantos agudos (R muito abaixo da
+    média) sem alterar F = 1 para curvas de mesma forma escaladas.
+    Quando a referência é inteiramente reta (distribuição uniforme em R), usa-se
+    o cosseno não centrado como fallback. Quando a referência é reta (κ ≈ 0),
+    usa-se a norma de curvatura como proxy.
     """
     max_kappa = float(np.max(reference))
     if max_kappa < 1e-9:
@@ -185,9 +189,16 @@ def similarity(reference: np.ndarray, candidates: np.ndarray) -> np.ndarray:
     r_cap = 100.0 / max_kappa
     ref_r = np.where(reference > 1e-9, 1.0 / np.maximum(reference, 1e-100), r_cap)
     cand_r = np.where(candidates > 1e-9, 1.0 / np.maximum(candidates, 1e-100), r_cap)
-    ref_norm = float(np.linalg.norm(ref_r))
-    cand_norms = np.linalg.norm(cand_r, axis=1)
-    return (cand_r @ ref_r) / (np.maximum(cand_norms, _EPSILON) * ref_norm)
+    ref_c = ref_r - float(np.mean(ref_r))
+    ref_norm = float(np.linalg.norm(ref_c))
+    if ref_norm < _EPSILON:
+        # Distribuição uniforme: fallback para cosseno não centrado.
+        ref_norm_u = float(np.linalg.norm(ref_r))
+        cand_norms_u = np.linalg.norm(cand_r, axis=1)
+        return (cand_r @ ref_r) / (np.maximum(cand_norms_u, _EPSILON) * ref_norm_u)
+    cand_c = cand_r - np.mean(cand_r, axis=1, keepdims=True)
+    cand_norms = np.linalg.norm(cand_c, axis=1)
+    return (cand_c @ ref_c) / (np.maximum(cand_norms, _EPSILON) * ref_norm)
 
 
 def refit_curve(

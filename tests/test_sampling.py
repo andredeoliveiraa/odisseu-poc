@@ -178,6 +178,35 @@ class UnconstrainedSamplingTests(unittest.TestCase):
 
         self.assertLess(result.iterations, 400)
 
+    def test_collapse_field_is_an_int(self) -> None:
+        result = STLBO(YACHT_HULL_SPACE, population_size=12, max_iterations=20, seed=1).sample(8)
+
+        self.assertIsInstance(result.collapse, int)
+
+    def test_collapse_field_is_zero_after_successful_repair(self) -> None:
+        """N = 30 sem colapso após o reparo, conforme Capítulo 5 da tese."""
+        result = STLBO(YACHT_HULL_SPACE, population_size=15, seed=1).sample(30)
+
+        self.assertEqual(result.collapse, 0)
+
+    def test_collapse_field_matches_penalty_without_repair(self) -> None:
+        """Sem reparo o campo reflete exatamente o colapso medido nos professores."""
+        result = STLBO(
+            YACHT_HULL_SPACE, population_size=8, max_iterations=5, seed=2, repair=False
+        ).sample(12)
+
+        self.assertEqual(result.collapse, int(collapse_penalty(result.unit_designs)))
+
+    def test_no_warning_when_collapse_is_zero(self) -> None:
+        """Nenhum UserWarning deve ser emitido quando o reparo elimina o colapso."""
+        import warnings as _warnings
+
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            STLBO(YACHT_HULL_SPACE, population_size=15, seed=1).sample(30)
+
+        self.assertEqual(len(caught), 0)
+
 
 class ConstrainedSamplingTests(unittest.TestCase):
     def test_wine_glass_designs_satisfy_the_constraints(self) -> None:
