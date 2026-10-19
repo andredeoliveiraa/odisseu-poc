@@ -18,7 +18,8 @@ from pathlib import Path
 
 import numpy as np
 
-from app.hull_generator import HullMesh
+from app.models.mesh import HullMesh
+from app.rhino_import import is_reference_image, unit_label
 
 try:
     import rhino3dm
@@ -51,6 +52,8 @@ class NurbsFaceInfo:
     control_grid: tuple[int, int]
     degree: tuple[int, int]
     dimensions: tuple[float, float, float]
+    #: Abreviação da unidade do arquivo, ou ``None`` se ele não a define.
+    unit: str | None = None
 
     @property
     def control_point_count(self) -> int:
@@ -60,11 +63,45 @@ class NurbsFaceInfo:
         u, v = self.control_grid
         du, dv = self.degree
         x, y, z = self.dimensions
+        unit = f" {self.unit}" if self.unit else ""
         return (
             f"Face {self.face_index} · camada “{self.layer_name}” · "
             f"grade {u}×{v} ({self.control_point_count} pontos) · "
-            f"grau {du}×{dv} · {x:.2f}×{y:.2f}×{z:.2f} m"
+            f"grau {du}×{dv} · {x:.2f}×{y:.2f}×{z:.2f}{unit}"
         )
+
+
+def _read_model(file_path: str | Path) -> "rhino3dm.File3dm":
+    _require_rhino3dm()
+    model = rhino3dm.File3dm.Read(str(file_path))
+    if model is None:
+        raise NurbsSurfaceError("O arquivo não pôde ser lido como um .3dm válido.")
+    return model
+
+
+def _surface_items(model):
+    """Percorre as superfícies candidatas, na ordem que define o índice de face.
+
+    Cada face de cada ``Brep`` visível é uma candidata própria, porque um
+    casco normalmente é modelado como várias superfícies (costado, fundo,
+    espelho de popa). Uma superfície solta, como a que :meth:`save_to_3dm`
+    grava, também entra. Imagens de referência coladas no Rhino ficam de
+    fora, como na importação de malha.
+    """
+    for obj in model.Objects:
+        if not obj.Attributes.Visible or is_reference_image(obj):
+            continue
+        geometry = obj.Geometry
+        type_name = type(geometry).__name__
+        if type_name == "Brep":
+            for face in geometry.Faces:
+                yield obj, face
+        elif type_name in ("NurbsSurface", "Surface", "Extrusion"):
+            yield obj, geometry
+
+
+def _to_nurbs(item):
+    return item.ToNurbsSurface() if hasattr(item, "ToNurbsSurface") else item
 
 
 def list_editable_surfaces(file_path: str | Path) -> list[NurbsFaceInfo]:
@@ -72,89 +109,44 @@ def list_editable_surfaces(file_path: str | Path) -> list[NurbsFaceInfo]:
 
     Objetos que só existem como curva, ponto ou malha pura não entram nesta
     lista — eles não têm uma superfície NURBS para editar por ponto de
-    controle. Cada face de cada ``Brep`` visível é uma candidata própria,
-    porque um casco normalmente é modelado como várias superfícies (costado,
-    fundo, espelho de popa) e não como uma peça única.
+    controle.
     """
-    _require_rhino3dm()
-    model = rhino3dm.File3dm.Read(str(file_path))
-    if model is None:
-        raise NurbsSurfaceError(
-            "O arquivo não pôde ser lido como um .3dm válido."
-        )
-
-    layer_names = {i: layer.Name for i, layer in enumerate(model.Layers)}
+    model = _read_model(file_path)
+    layer_names = {layer.Index: layer.Name for layer in model.Layers}
+    unit = unit_label(model.Settings.ModelUnitSystem)
     infos: list[NurbsFaceInfo] = []
-    face_index = 0
-    for obj in model.Objects:
-        if not obj.Attributes.Visible:
+    for face_index, (obj, item) in enumerate(_surface_items(model)):
+        nurbs = _to_nurbs(item)
+        if nurbs is None:
             continue
-        geometry = obj.Geometry
-        layer_name = layer_names.get(obj.Attributes.LayerIndex, "")
-        type_name = type(geometry).__name__
-
-        if type_name == "Brep":
-            candidates = [
-                (face.ToNurbsSurface(), face.GetBoundingBox()) for face in geometry.Faces
-            ]
-        elif type_name in ("NurbsSurface", "Surface", "Extrusion"):
-            # Um arquivo salvo por este próprio módulo guarda a superfície
-            # solta, sem um Brep em volta — precisa do mesmo tratamento.
-            nurbs = geometry.ToNurbsSurface() if hasattr(geometry, "ToNurbsSurface") else geometry
-            candidates = [(nurbs, geometry.GetBoundingBox())]
-        else:
-            continue
-
-        for nurbs, bbox in candidates:
-            if nurbs is None:
-                face_index += 1
-                continue
-            infos.append(
-                NurbsFaceInfo(
-                    face_index=face_index,
-                    layer_name=layer_name,
-                    control_grid=(nurbs.Points.CountU, nurbs.Points.CountV),
-                    degree=(nurbs.Degree(0), nurbs.Degree(1)),
-                    dimensions=(
-                        bbox.Max.X - bbox.Min.X,
-                        bbox.Max.Y - bbox.Min.Y,
-                        bbox.Max.Z - bbox.Min.Z,
-                    ),
-                )
+        bbox = item.GetBoundingBox()
+        infos.append(
+            NurbsFaceInfo(
+                face_index=face_index,
+                layer_name=layer_names.get(obj.Attributes.LayerIndex, ""),
+                control_grid=(nurbs.Points.CountU, nurbs.Points.CountV),
+                degree=(nurbs.Degree(0), nurbs.Degree(1)),
+                dimensions=(
+                    bbox.Max.X - bbox.Min.X,
+                    bbox.Max.Y - bbox.Min.Y,
+                    bbox.Max.Z - bbox.Min.Z,
+                ),
+                unit=unit,
             )
-            face_index += 1
+        )
     return infos
 
 
 def _nurbs_surface_by_face_index(model, face_index: int):
-    """Percorre o mesmo caminho de :func:`list_editable_surfaces` até a face pedida."""
-    current = 0
-    for obj in model.Objects:
-        if not obj.Attributes.Visible:
-            continue
-        geometry = obj.Geometry
-        type_name = type(geometry).__name__
-
-        if type_name == "Brep":
-            surfaces = list(geometry.Faces)
-            to_nurbs = lambda item: item.ToNurbsSurface()
-        elif type_name in ("NurbsSurface", "Surface", "Extrusion"):
-            surfaces = [geometry]
-            to_nurbs = lambda item: (
-                item.ToNurbsSurface() if hasattr(item, "ToNurbsSurface") else item
-            )
-        else:
-            continue
-
-        for item in surfaces:
-            if current == face_index:
-                nurbs = to_nurbs(item)
-                if nurbs is None:
-                    raise NurbsSurfaceError(
-                        "Esta face não pôde ser convertida em superfície NURBS."
-                    )
-                return nurbs
-            current += 1
+    """Localiza a face pedida pelo mesmo percurso de :func:`list_editable_surfaces`."""
+    for current, (_obj, item) in enumerate(_surface_items(model)):
+        if current == face_index:
+            nurbs = _to_nurbs(item)
+            if nurbs is None:
+                raise NurbsSurfaceError(
+                    "Esta face não pôde ser convertida em superfície NURBS."
+                )
+            return nurbs
     raise NurbsSurfaceError(f"Não existe face de índice {face_index} neste arquivo.")
 
 
@@ -170,19 +162,29 @@ class EditableNurbsSurface:
     #: Resolução padrão da malha de exibição, em pontos por direção.
     DEFAULT_RESOLUTION = 28
 
-    def __init__(self, surface: "rhino3dm.NurbsSurface") -> None:
+    def __init__(
+        self,
+        surface: "rhino3dm.NurbsSurface",
+        unit_system: "rhino3dm.UnitSystem | None" = None,
+    ) -> None:
         _require_rhino3dm()
         self._surface = surface
+        self._unit_system = unit_system
 
     @classmethod
     def from_3dm_face(cls, file_path: str | Path, face_index: int) -> "EditableNurbsSurface":
         """Carrega uma face específica de um .3dm pelo índice dado por
         :func:`list_editable_surfaces`."""
-        _require_rhino3dm()
-        model = rhino3dm.File3dm.Read(str(file_path))
-        if model is None:
-            raise NurbsSurfaceError("O arquivo não pôde ser lido como um .3dm válido.")
-        return cls(_nurbs_surface_by_face_index(model, face_index))
+        model = _read_model(file_path)
+        return cls(
+            _nurbs_surface_by_face_index(model, face_index),
+            model.Settings.ModelUnitSystem,
+        )
+
+    @property
+    def unit(self) -> str | None:
+        """Abreviação da unidade do arquivo de origem, ou ``None``."""
+        return unit_label(self._unit_system)
 
     @property
     def control_grid_shape(self) -> tuple[int, int]:
@@ -264,8 +266,11 @@ class EditableNurbsSurface:
 
         Este é um arquivo novo, com só a superfície editada dentro — ele não
         recupera as outras camadas, curvas ou imagens de referência do
-        arquivo original de onde a superfície veio.
+        arquivo original de onde a superfície veio. A unidade do arquivo de
+        origem é mantida, para a superfície reabrir no Rhino na mesma escala.
         """
         model = rhino3dm.File3dm()
+        if self._unit_system is not None:
+            model.Settings.ModelUnitSystem = self._unit_system
         model.Objects.AddSurface(self._surface)
         model.Write(str(file_path), 7)

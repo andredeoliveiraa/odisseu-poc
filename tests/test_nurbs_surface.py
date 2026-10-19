@@ -29,13 +29,33 @@ def _flat_patch(count_u: int = 4, count_v: int = 3) -> rhino3dm.NurbsSurface:
     return surface
 
 
-def _write_model_with_brep_face(surface: rhino3dm.NurbsSurface, layer_name: str = "Casco") -> Path:
+def _write_model_with_brep_face(
+    surface: rhino3dm.NurbsSurface,
+    layer_name: str = "Casco",
+    unit_system: rhino3dm.UnitSystem | None = None,
+    reference_image: bool = False,
+) -> Path:
     """Grava um .3dm com a superfície envolvida num Brep de uma face só,
-    do jeito que o Rhino normalmente salva uma superfície modelada."""
+    do jeito que o Rhino normalmente salva uma superfície modelada.
+
+    Com ``reference_image``, acrescenta antes do casco uma superfície plana
+    com nome de arquivo de imagem, como o comando "Picture" do Rhino cria.
+    """
     model = rhino3dm.File3dm()
+    if unit_system is not None:
+        model.Settings.ModelUnitSystem = unit_system
+    # Uma camada extra antes da do casco, para o índice não coincidir com 0.
+    model.Layers.Add(rhino3dm.Layer())
     layer = rhino3dm.Layer()
     layer.Name = layer_name
     layer_index = model.Layers.Add(layer)
+
+    if reference_image:
+        picture = rhino3dm.ObjectAttributes()
+        picture.Name = "planta.png"
+        model.Objects.AddBrep(
+            rhino3dm.Brep.CreateFromSurface(_flat_patch(2, 2)), picture
+        )
 
     brep = rhino3dm.Brep.CreateFromSurface(surface)
     attributes = rhino3dm.ObjectAttributes()
@@ -116,6 +136,39 @@ class EditableNurbsSurfaceTests(unittest.TestCase):
             self.assertEqual(candidates[0].control_grid, (4, 3))
         finally:
             path.unlink(missing_ok=True)
+
+    def test_reference_images_are_not_offered_for_editing(self) -> None:
+        path = _write_model_with_brep_face(_flat_patch(), reference_image=True)
+        try:
+            candidates = list_editable_surfaces(path)
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].control_grid, (4, 3))
+            # O índice listado precisa abrir a mesma face, e não a imagem.
+            surface = EditableNurbsSurface.from_3dm_face(path, candidates[0].face_index)
+            self.assertEqual(surface.control_grid_shape, (4, 3))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_file_unit_is_shown_and_kept_on_save(self) -> None:
+        path = _write_model_with_brep_face(
+            _flat_patch(), unit_system=rhino3dm.UnitSystem.Meters
+        )
+        try:
+            candidate = list_editable_surfaces(path)[0]
+            self.assertEqual(candidate.unit, "m")
+            self.assertTrue(candidate.describe().endswith(" m"))
+            surface = EditableNurbsSurface.from_3dm_face(path, candidate.face_index)
+        finally:
+            path.unlink(missing_ok=True)
+
+        self.assertEqual(surface.unit, "m")
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = Path(tmp) / "editada.3dm"
+            surface.save_to_3dm(saved)
+            self.assertEqual(
+                rhino3dm.File3dm.Read(str(saved)).Settings.ModelUnitSystem,
+                rhino3dm.UnitSystem.Meters,
+            )
 
     def test_raises_for_a_file_without_any_surface(self) -> None:
         model = rhino3dm.File3dm()

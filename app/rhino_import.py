@@ -35,6 +35,23 @@ class RhinoImportError(ValueError):
 #: então a checagem vale para qualquer arquivo, não só para este.
 _REFERENCE_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
+#: Abreviação exibida para cada unidade de modelo do Rhino.
+_UNIT_LABELS = {
+    "Microns": "µm",
+    "Millimeters": "mm",
+    "Centimeters": "cm",
+    "Decimeters": "dm",
+    "Meters": "m",
+    "Kilometers": "km",
+    "Inches": "in",
+    "Feet": "ft",
+    "Yards": "yd",
+}
+
+
+def _plural(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
 
 @dataclass(frozen=True)
 class RhinoImportReport:
@@ -53,10 +70,36 @@ class RhinoImportReport:
     surfaces_without_cached_mesh: int
     reference_images_skipped: int
     non_surface_objects_skipped: int
+    #: Abreviação da unidade do modelo, ou ``None`` se o arquivo não a define.
+    unit: str | None = None
 
     @property
     def has_omissions(self) -> bool:
         return self.surfaces_without_cached_mesh > 0
+
+    def summary(self) -> str:
+        """Resumo de uma linha do que foi lido, para a barra de status."""
+        parts = [
+            _plural(self.objects_total, "objeto lido", "objetos lidos"),
+            _plural(self.surfaces_shown, "superfície exibida", "superfícies exibidas"),
+        ]
+        if self.reference_images_skipped:
+            parts.append(
+                _plural(
+                    self.reference_images_skipped,
+                    "imagem de referência ignorada",
+                    "imagens de referência ignoradas",
+                )
+            )
+        if self.non_surface_objects_skipped:
+            parts.append(
+                _plural(
+                    self.non_surface_objects_skipped,
+                    "objeto sem superfície ignorado",
+                    "objetos sem superfície ignorados",
+                )
+            )
+        return " · ".join(parts)
 
     def describe_omissions(self) -> str:
         if not self.has_omissions:
@@ -75,7 +118,11 @@ def _is_available() -> bool:
 
 
 def require_rhino3dm() -> None:
-    """Levanta um erro claro quando a dependência opcional não está instalada."""
+    """Levanta um erro claro quando o ``rhino3dm`` não está instalado.
+
+    O pacote está em ``requirements.txt``; a checagem cobre ambientes
+    montados sem ele, em que o resto da aplicação continua funcionando.
+    """
     if not _is_available():
         raise RhinoImportError(
             "A leitura de arquivos .3dm depende do pacote \"rhino3dm\", que não "
@@ -121,7 +168,7 @@ def _collect_face_meshes(geometry) -> list["rhino3dm.Mesh"]:
     return []
 
 
-def _is_reference_image(obj) -> bool:
+def is_reference_image(obj) -> bool:
     """Reconhece uma superfície criada pelo comando "Picture" do Rhino.
 
     Ao colar ou inserir uma imagem no Rhino, ele cria uma superfície plana
@@ -130,6 +177,14 @@ def _is_reference_image(obj) -> bool:
     """
     name = (obj.Attributes.Name or "").strip().lower()
     return name.endswith(_REFERENCE_IMAGE_EXTENSIONS)
+
+
+def unit_label(unit_system: "rhino3dm.UnitSystem | None") -> str | None:
+    """Abreviação de uma unidade do Rhino, ou ``None`` quando não é reconhecida."""
+    if unit_system is None:
+        return None
+    name = getattr(unit_system, "name", str(unit_system).rsplit(".", 1)[-1])
+    return _UNIT_LABELS.get(name)
 
 
 def _face_count_for(geometry) -> int:
@@ -171,7 +226,7 @@ def read_3dm_as_polydata(file_path: str | Path) -> tuple[pv.PolyData, RhinoImpor
         objects_total += 1
         if not obj.Attributes.Visible:
             continue
-        if _is_reference_image(obj):
+        if is_reference_image(obj):
             reference_images_skipped += 1
             continue
 
@@ -208,5 +263,6 @@ def read_3dm_as_polydata(file_path: str | Path) -> tuple[pv.PolyData, RhinoImpor
         surfaces_without_cached_mesh=max(0, surface_faces_total - surface_faces_shown),
         reference_images_skipped=reference_images_skipped,
         non_surface_objects_skipped=non_surface_objects_skipped,
+        unit=unit_label(model.Settings.ModelUnitSystem),
     )
     return polydata, report

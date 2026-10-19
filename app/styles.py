@@ -63,7 +63,7 @@ QDoubleSpinBox, QSpinBox {
 QDoubleSpinBox:focus, QSpinBox:focus {
     border-color: #4ea5d9;
 }
-QDoubleSpinBox[state="error"] {
+QDoubleSpinBox[state="error"], QSpinBox[state="error"] {
     border-color: #ff8b86;
     background-color: #2d2022;
 }
@@ -118,6 +118,25 @@ QLabel#panelTitle {
 }
 QLabel#secondaryText {
     color: #aab4bf;
+}
+QLabel#subheading {
+    color: #9fb3c4;
+    font-weight: 600;
+    padding-top: 6px;
+}
+QRadioButton, QCheckBox {
+    spacing: 8px;
+}
+QTableWidget {
+    background-color: #1c2127;
+    gridline-color: #303943;
+    border: 1px solid #35404b;
+}
+QHeaderView::section {
+    background-color: #20262d;
+    border: none;
+    border-bottom: 1px solid #303943;
+    padding: 4px 6px;
 }
 QLabel#modeHint {
     background-color: #302a1e;

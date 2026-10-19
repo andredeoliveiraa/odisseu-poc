@@ -10,7 +10,13 @@ import pyvista as pv
 from pyvistaqt import QtInteractor
 from PySide6.QtCore import Signal
 
-from app.hull_generator import HullGenerator, HullMesh
+from app.models.mesh import HullMesh
+
+
+#: Faixas de zebra por unidade da coordenada refletida, suas cores e a resolução do mapa.
+ZEBRA_DENSITY = 7.0
+ZEBRA_COLORS = ("#12161b", "#f2f5f8")
+ZEBRA_STEPS_PER_BAND = 12
 
 
 @dataclass(frozen=True)
@@ -33,27 +39,47 @@ class HullViewer(QtInteractor):
 
     #: Nome do ator usado para o modelo exibido no momento.
     ACTOR_NAME = "current-hull"
+    OVERLAY_PREFIX = "overlay-"
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._current_mesh: pv.DataSet | None = None
+        self._show_edges = False
+        self._is_hull = False
+        self._zebra = False
+        self._overlays: set[str] = set()
         self._control_point_widgets: list = []
+        self._axis_titles: tuple[str, str, str] | None = None
         self.set_background("#20252b")
-        self._build_initial_scene()
-
-    def _build_initial_scene(self) -> None:
-        """Monta a cena inicial com o casco padrão e os eixos cotados."""
-        self.set_hull(HullGenerator().generate_mesh())
+        # A cena começa vazia: o primeiro casco vem da janela principal, com o
+        # perfil escolhido, para não existirem dois valores iniciais diferentes.
         self.add_axes()
-        self._show_measurement_grid()
-        self.reset_view()
 
-    def _show_measurement_grid(self) -> None:
-        """Desenha a grade cotada com rótulos legíveis sobre o fundo escuro."""
+    def set_axis_titles(self, unit: str | None, *, hull_axes: bool) -> None:
+        """Rotula a grade cotada com a unidade do modelo exibido.
+
+        Os nomes navais (comprimento, boca, altura) só valem para o casco
+        gerado aqui, cuja orientação é conhecida; para malhas importadas a
+        grade usa os eixos X, Y e Z. Sem unidade conhecida, o título fica
+        sem ela em vez de afirmar metros.
+        """
+        names = ("Comprimento", "Boca", "Altura") if hull_axes else ("X", "Y", "Z")
+        suffix = f" ({unit})" if unit else ""
+        titles = tuple(name + suffix for name in names)
+        if titles == self._axis_titles:
+            return
+        self._axis_titles = titles
+        self._show_measurement_grid(*titles)
+
+    def _show_measurement_grid(self, xtitle: str, ytitle: str, ztitle: str) -> None:
+        """Desenha a grade cotada com rótulos legíveis sobre o fundo escuro.
+
+        A grade acompanha sozinha os limites da cena a cada troca de malha.
+        """
         self.show_grid(
-            xtitle="Comprimento (m)",
-            ytitle="Boca (m)",
-            ztitle="Calado (m)",
+            xtitle=xtitle,
+            ytitle=ytitle,
+            ztitle=ztitle,
             color="#c7d2dd",
             font_size=11,
             font_family="arial",
@@ -67,34 +93,170 @@ class HullViewer(QtInteractor):
 
     def set_hull(self, generated_mesh: HullMesh) -> None:
         """Substitui a malha exibida pelo resultado do gerador."""
-        sample_hull = pv.PolyData(generated_mesh.vertices, generated_mesh.pyvista_faces)
-        # Funde os pontos coincidentes da roda de proa e do plano central para
-        # que a superfície fique fechada (estanque) ao exportar.
-        self.set_mesh(sample_hull.clean())
+        # A malha dos patches de Coons já vem com os vértices fundidos.
+        self.set_mesh(
+            pv.PolyData(generated_mesh.vertices, generated_mesh.pyvista_faces), hull=True
+        )
 
-    def set_mesh(self, mesh: pv.DataSet | pv.MultiBlock) -> None:
-        """Exibe uma malha lida de arquivo ou criada pelo gerador."""
+    @staticmethod
+    def displayable(mesh: pv.DataSet | pv.MultiBlock) -> pv.DataSet:
+        """Normaliza uma malha para exibição, sem tocar na cena.
+
+        Raises:
+            ValueError: se a malha não tiver pontos para mostrar.
+        """
         if isinstance(mesh, pv.MultiBlock):
             mesh = mesh.combine()
         if int(getattr(mesh, "n_points", 0)) == 0:
             raise ValueError("O arquivo não contém pontos que possam ser exibidos.")
+        return mesh
 
-        self.remove_actor(self.ACTOR_NAME, reset_camera=False)
+    @classmethod
+    def read_mesh_file(cls, file_path: str | Path) -> pv.DataSet:
+        """Lê uma malha compatível com VTK/PyVista sem alterar a cena.
+
+        Separar a leitura da exibição permite validar o arquivo antes de
+        descartar o modelo atual.
+        """
+        return cls.displayable(pv.read(str(file_path)))
+
+    def set_mesh(
+        self, mesh: pv.DataSet | pv.MultiBlock, hull: bool | None = None
+    ) -> None:
+        """Exibe uma malha lida de arquivo ou criada pelo gerador.
+
+        ``hull`` indica se é o casco paramétrico (malha densa, cujas arestas
+        ficam ocultas por padrão); ``None`` mantém a classificação anterior,
+        como numa transformação do objeto.
+        """
+        mesh = self.displayable(mesh)
+        if hull is not None:
+            self._is_hull = hull
         self._current_mesh = mesh.copy(deep=True)
+        self._draw_current_mesh()
+
+    def _draw_current_mesh(self) -> None:
+        """Desenha ``_current_mesh`` com as opções de exibição atuais."""
+        self.remove_actor(self.ACTOR_NAME, reset_camera=False)
+        mesh = self._current_mesh
+        if mesh is None:
+            return
+        if self._zebra and isinstance(mesh, pv.PolyData):
+            zebra = self._zebra_mesh(mesh)
+            bands = self._zebra_colors(zebra)
+            self.add_mesh(
+                zebra,
+                scalars="Zebra",
+                cmap=bands[0],
+                clim=bands[1],
+                n_colors=len(bands[0]),
+                show_scalar_bar=False,
+                name=self.ACTOR_NAME,
+                smooth_shading=False,
+                show_edges=False,
+            )
+            return
+        options = {"split_sharp_edges": True} if isinstance(mesh, pv.PolyData) else {}
         self.add_mesh(
-            self._current_mesh,
+            mesh,
             color="#4ea5d9",
-            show_edges=True,
+            show_edges=self._show_edges if self._is_hull else True,
             edge_color="#dcebf5",
             line_width=1,
             name=self.ACTOR_NAME,
             smooth_shading=True,
+            **options,
         )
 
-    def load_mesh(self, file_path: str | Path) -> None:
-        """Lê uma malha compatível com VTK/PyVista e a exibe."""
-        mesh = pv.read(str(file_path))
-        self.set_mesh(mesh)
+    def set_show_edges(self, enabled: bool) -> None:
+        """Mostra ou esconde as arestas da malha."""
+        self._show_edges = enabled
+        self._draw_current_mesh()
+        self.render()
+
+    @staticmethod
+    def _zebra_mesh(mesh: pv.PolyData) -> pv.PolyData:
+        """Malha com a faixa de zebra: reflexo de uma direção fixa nas normais.
+
+        Faixas que atravessam as regiões do casco sem quebras indicam
+        continuidade G1 e superfície sem ondulações (Figura 3.14).
+        """
+        shaded = mesh.triangulate().compute_normals(
+            point_normals=True,
+            cell_normals=False,
+            split_vertices=True,
+            feature_angle=35.0,
+            auto_orient_normals=False,
+        )
+        normals = np.asarray(shaded.point_data["Normals"], dtype=float)
+        view = np.array([0.35, -1.0, 0.45])
+        view /= np.linalg.norm(view)
+        reflected = view - 2.0 * (normals @ view)[:, None] * normals
+        coordinate = reflected @ np.array([0.8, 0.1, 0.6])
+        # Valor contínuo: as faixas saem do mapa de cores (por pixel), sem blocos.
+        shaded.point_data["Zebra"] = coordinate * ZEBRA_DENSITY
+        return shaded
+
+    @staticmethod
+    def _zebra_colors(mesh: pv.PolyData) -> tuple[list[str], tuple[float, float]]:
+        """Mapa de cores com faixas alternadas, uma por unidade do valor ``Zebra``."""
+        values = np.asarray(mesh.point_data["Zebra"], dtype=float)
+        first = int(np.floor(values.min()))
+        last = int(np.floor(values.max())) + 1
+        colors: list[str] = []
+        for band in range(first, last):
+            colors += [ZEBRA_COLORS[band % 2]] * ZEBRA_STEPS_PER_BAND
+        return colors, (float(first), float(last))
+
+    def set_zebra(self, enabled: bool) -> None:
+        """Liga ou desliga a inspeção por listras de zebra."""
+        self._zebra = enabled
+        self._draw_current_mesh()
+        self.render()
+
+    def set_overlay(
+        self,
+        name: str,
+        polylines: list[np.ndarray] | None,
+        color: str = "#ffd166",
+        width: float = 2.0,
+    ) -> None:
+        """Mostra (ou remove, com ``None``) um conjunto de polilinhas sobre o casco."""
+        actor_name = self.OVERLAY_PREFIX + name
+        if actor_name in self._overlays:
+            self.remove_actor(actor_name, reset_camera=False)
+            self._overlays.discard(actor_name)
+        if polylines:
+            points, cells, base = [], [], 0
+            for array in polylines:
+                array = np.asarray(array, dtype=float)
+                if array.ndim == 3:  # (n, 2, 3): segmentos soltos
+                    count = len(array)
+                    points.append(array.reshape(-1, 3))
+                    index = base + np.arange(2 * count).reshape(count, 2)
+                    cells.append(np.column_stack((np.full(count, 2), index)).ravel())
+                    base += 2 * count
+                elif len(array) >= 2:  # (m, 3): polilinha
+                    points.append(array)
+                    cells.append(
+                        np.concatenate(([len(array)], base + np.arange(len(array))))
+                    )
+                    base += len(array)
+            if points:
+                lines = pv.PolyData(np.vstack(points), lines=np.concatenate(cells))
+                self.add_mesh(
+                    lines,
+                    color=color,
+                    line_width=width,
+                    name=actor_name,
+                    reset_camera=False,
+                    pickable=False,
+                )
+                self._overlays.add(actor_name)
+        self.render()
+
+    def overlay_names(self) -> set[str]:
+        return {name[len(self.OVERLAY_PREFIX):] for name in self._overlays}
 
     def save_mesh(self, file_path: str | Path) -> None:
         """Exporta a geometria visível para um formato de malha suportado."""

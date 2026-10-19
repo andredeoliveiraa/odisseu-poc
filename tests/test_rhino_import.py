@@ -8,7 +8,7 @@ from pathlib import Path
 
 import rhino3dm
 
-from app.rhino_import import RhinoImportError, read_3dm_as_polydata
+from app.rhino_import import RhinoImportError, read_3dm_as_polydata, unit_label
 
 
 def _square_mesh() -> rhino3dm.Mesh:
@@ -20,9 +20,14 @@ def _square_mesh() -> rhino3dm.Mesh:
     return mesh
 
 
-def _write_model(objects: list[tuple[object, dict]]) -> Path:
+def _write_model(
+    objects: list[tuple[object, dict]],
+    unit_system: rhino3dm.UnitSystem | None = None,
+) -> Path:
     """Grava um .3dm temporário com os objetos e atributos dados."""
     model = rhino3dm.File3dm()
+    if unit_system is not None:
+        model.Settings.ModelUnitSystem = unit_system
     for geometry, attr_overrides in objects:
         attributes = rhino3dm.ObjectAttributes()
         for key, value in attr_overrides.items():
@@ -70,6 +75,33 @@ class RhinoImportTests(unittest.TestCase):
         self.assertEqual(report.objects_total, 2)
         self.assertEqual(report.surfaces_shown, 1)
         self.assertEqual(report.reference_images_skipped, 1)
+
+    def test_report_carries_the_file_unit_and_a_summary(self) -> None:
+        line = rhino3dm.LineCurve(rhino3dm.Point3d(0, 0, 0), rhino3dm.Point3d(1, 0, 0))
+        path = _write_model(
+            [
+                (_square_mesh(), {"Name": "casco"}),
+                (_square_mesh(), {"Name": "vista.jpg"}),
+                (line, {"Name": "linha"}),
+            ],
+            unit_system=rhino3dm.UnitSystem.Meters,
+        )
+        try:
+            _, report = read_3dm_as_polydata(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+        self.assertEqual(report.unit, "m")
+        self.assertEqual(
+            report.summary(),
+            "3 objetos lidos · 1 superfície exibida · "
+            "1 imagem de referência ignorada · 1 objeto sem superfície ignorado",
+        )
+
+    def test_unknown_unit_is_reported_as_none(self) -> None:
+        self.assertIsNone(unit_label(rhino3dm.UnitSystem.CustomUnits))
+        self.assertIsNone(unit_label(None))
+        self.assertEqual(unit_label(rhino3dm.UnitSystem.Millimeters), "mm")
 
     def test_skips_invisible_objects(self) -> None:
         path = _write_model([(_square_mesh(), {"Name": "oculto", "Visible": False})])

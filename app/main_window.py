@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
+import numpy as np
+import pyvista as pv
 from PySide6.QtCore import Qt
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QCloseEvent,
     QDragEnterEvent,
     QDropEvent,
@@ -14,12 +18,10 @@ from PySide6.QtGui import (
     QUndoStack,
 )
 from PySide6.QtWidgets import (
-    QApplication,
     QDockWidget,
-    QLabel,
-    QComboBox,
     QFileDialog,
     QFrame,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QScrollArea,
@@ -29,22 +31,38 @@ from PySide6.QtWidgets import (
 
 from app.commands.mesh_commands import TransformMeshCommand
 from app.controllers.hull_controller import HullController
-from app.models.attributes import ATTRIBUTES_BY_KEY, evaluate_attributes
+from app.models.attributes import ATTRIBUTES_BY_KEY, HullDesign, evaluate_attributes
+from app.models.hull_types import (
+    DISPLACEMENT,
+    HULL_DESCRIPTIONS,
+    HULL_TYPE_NAMES,
+    PLANING,
+    SEMI_DISPLACEMENT,
+    build_hull,
+)
+from app.models.hydrostatics import COLUMN_INFO, default_drafts, hydrostatic_table
 from app.models.nurbs_surface import (
     EditableNurbsSurface,
     NurbsSurfaceError,
     list_editable_surfaces,
 )
-from app.models.sampling import DEFAULT_MINIMUM_RADIUS, AttributeSampler, SampledDesign
+from app.models.sampling import SampledDesign
 from app.models.transforms import TransformParameters, transformation_matrix
-from app.models.profiles import CUSTOM_PROFILE_NAME, DEFAULT_PROFILE, HULL_PROFILES, HullProfile
-from app.rhino_import import read_3dm_as_polydata
-from app.visualization import HullViewer
+from app.rhino_import import RhinoImportReport, read_3dm_as_polydata
 from app.views.attribute_panel import AttributePanel
+from app.views.curvature_dialog import CurvatureDialog
+from app.views.hydrostatic_panel import HydrostaticPanel
 from app.views.nurbs_face_dialog import NurbsFaceSelectionDialog
 from app.views.parameter_panel import ParameterPanel
+from app.visualization import HullViewer
+from app.workers import SamplingWorker
 
-import pyvista as pv
+#: Rótulos curtos dos cascos iniciais, como na barra do ModiYacht (SD, P, D).
+HULL_TYPE_BUTTONS = (
+    (SEMI_DISPLACEMENT, "SD"),
+    (PLANING, "P"),
+    (DISPLACEMENT, "D"),
+)
 
 
 class MainWindow(QMainWindow):
@@ -54,7 +72,9 @@ class MainWindow(QMainWindow):
     renderizador ficam isolados em :class:`HullViewer`.
     """
 
-    SUPPORTED_MESH_EXTENSIONS = {".stl", ".obj", ".ply", ".vtk", ".vtp", ".3dm"}
+    SUPPORTED_MESH_EXTENSIONS = (".stl", ".obj", ".ply", ".vtk", ".vtp", ".3dm")
+    #: Os mesmos formatos, por extenso, para mensagens ao usuário.
+    SUPPORTED_FORMATS_TEXT = "STL, OBJ, PLY, VTK, VTP ou .3dm do Rhino"
     EXPORT_EXTENSIONS = {
         "STL (*.stl)": ".stl",
         "PLY (*.ply)": ".ply",
@@ -65,67 +85,45 @@ class MainWindow(QMainWindow):
     STATUS_TIMEOUT_MS = 8000
     #: Transformações mantidas no histórico de desfazer.
     UNDO_HISTORY_LIMIT = 20
+    #: Quantidade de seções transversais desenhadas na inspeção de fairness.
+    SECTION_COUNT = 30
 
     def __init__(self) -> None:
         super().__init__()
-        self._model_name = DEFAULT_PROFILE.name
+        self._model_name = HULL_TYPE_NAMES[SEMI_DISPLACEMENT]
         self._model_kind = "Gerado no Odisseu"
         self._source_path: Path | None = None
+        #: Unidade de comprimento do modelo exibido, ou ``None`` se desconhecida.
+        self._model_unit: str | None = "m"
         self._nurbs_surface: EditableNurbsSurface | None = None
         self._nurbs_edit_active = False
-        self._active_profile_name = DEFAULT_PROFILE.name
-        self._profile_stations = {profile.name: 64 for profile in HULL_PROFILES}
         self._samples: list[SampledDesign] = []
         self._sample_attributes: list[str] = []
+        self._worker: SamplingWorker | None = None
 
-        self.setWindowTitle(f"{DEFAULT_PROFILE.name} — Odisseu")
+        self.setWindowTitle(f"{self._model_name} — Odisseu")
         self.resize(1280, 800)
         self.setMinimumSize(900, 620)
         self.setAcceptDrops(True)
 
         self.viewer = HullViewer(self)
         self.setCentralWidget(self.viewer)
+
         self.parameter_panel = ParameterPanel(self)
-
-        parameter_scroll = QScrollArea(self)
-        parameter_scroll.setWidgetResizable(True)
-        # A barra horizontal precisa aparecer quando o painel fica mais estreito
-        # que o formulário: desligada, o conteúdo excedente ficava inacessível.
-        parameter_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        self.parameter_dock = self._create_dock(
+            "Parâmetros do casco", "parameterDock", self.parameter_panel, 330,
+            horizontal_scroll=True,
         )
-        parameter_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        parameter_scroll.setWidget(self.parameter_panel)
-
-        self.parameter_dock = QDockWidget("Parâmetros do casco", self)
-        self.parameter_dock.setObjectName("parameterDock")
-        self.parameter_dock.setMinimumWidth(300)
-        self.parameter_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea
-            | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self.parameter_dock.setWidget(parameter_scroll)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.parameter_dock)
-
         self.attribute_panel = AttributePanel(self)
-        attribute_scroll = QScrollArea(self)
-        attribute_scroll.setWidgetResizable(True)
-        attribute_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        self.attribute_dock = self._create_dock(
+            "Atributos", "attributeDock", self.attribute_panel, 340
         )
-        attribute_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        attribute_scroll.setWidget(self.attribute_panel)
-
-        self.attribute_dock = QDockWidget("Atributos", self)
-        self.attribute_dock.setObjectName("attributeDock")
-        self.attribute_dock.setMinimumWidth(340)
-        self.attribute_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea
-            | Qt.DockWidgetArea.RightDockWidgetArea
+        self.hydrostatic_panel = HydrostaticPanel(self)
+        self.hydrostatic_dock = self._create_dock(
+            "Hidrostática", "hydrostaticDock", self.hydrostatic_panel, 340
         )
-        self.attribute_dock.setWidget(attribute_scroll)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.attribute_dock)
         self.tabifyDockWidget(self.parameter_dock, self.attribute_dock)
+        self.tabifyDockWidget(self.attribute_dock, self.hydrostatic_dock)
         self.parameter_dock.raise_()
 
         self.controller = HullController(self.viewer, self.parameter_panel)
@@ -135,20 +133,55 @@ class MainWindow(QMainWindow):
         self.undo_stack.setUndoLimit(self.UNDO_HISTORY_LIMIT)
         self.controller.hull_generated.connect(self._on_parametric_hull_generated)
         self.parameter_panel.transform_requested.connect(self._apply_transform)
-        self.parameter_panel.parameters_changed.connect(self._on_parameters_edited)
-        self.parameter_panel.parameters_changed.connect(self._refresh_attribute_scores)
+        self.parameter_panel.reset_requested.connect(self._restore_initial_hull)
+        # Ao abrir uma malha (ou voltar ao casco paramétrico) a avaliação por
+        # atributos e a hidrostática precisam acompanhar.
+        self.parameter_panel.parametric_mode_changed.connect(self._on_parametric_mode_changed)
         self.attribute_panel.sample_requested.connect(self._sample_designs)
+        self.attribute_panel.cancel_requested.connect(self._cancel_sampling)
         self.attribute_panel.design_selected.connect(self._show_sampled_design)
+        self.hydrostatic_panel.calculate_requested.connect(self._calculate_hydrostatics)
+        self.hydrostatic_panel.export_requested.connect(self._export_hydrostatics)
         self.viewer.status_message.connect(self._show_status)
 
         self._create_actions()
         self._create_menus()
         self._create_toolbar()
-        self._select_profile_by_name(DEFAULT_PROFILE.name)
+        self.controller.load_initial(SEMI_DISPLACEMENT)
+        self.viewer.reset_view()
         self._refresh_model_info()
         self._show_status(
-            "Pronto · ajuste os parâmetros ou arraste uma malha 3D para a janela"
+            "Pronto · escolha um casco inicial (SD, P, D) ou arraste uma malha 3D para a janela"
         )
+
+    def _create_dock(
+        self,
+        title: str,
+        name: str,
+        widget,
+        minimum_width: int,
+        horizontal_scroll: bool = False,
+    ) -> QDockWidget:
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        # A barra horizontal precisa aparecer quando o painel fica mais estreito
+        # que o formulário: desligada, o conteúdo excedente ficava inacessível.
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            if horizontal_scroll
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(widget)
+        dock = QDockWidget(title, self)
+        dock.setObjectName(name)
+        dock.setMinimumWidth(minimum_width)
+        dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        dock.setWidget(scroll)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        return dock
 
     # ------------------------------------------------------------------
     # Construção da interface
@@ -160,15 +193,29 @@ class MainWindow(QMainWindow):
         """Cria ações reutilizadas pelos menus e pela barra de ferramentas."""
         self.new_action = QAction("Novo casco", self)
         self.new_action.setShortcut("Ctrl+N")
-        self.new_action.setStatusTip(
-            f"Cria um casco novo com o perfil {DEFAULT_PROFILE.name}"
-        )
+        self.new_action.setStatusTip("Cria um casco inicial de semi-deslocamento")
         self.new_action.setIcon(self._icon(QStyle.StandardPixmap.SP_FileIcon))
         self.new_action.triggered.connect(self._new_hull)
 
+        self.hull_type_group = QActionGroup(self)
+        self.hull_type_group.setExclusive(True)
+        self.hull_type_actions: dict[str, QAction] = {}
+        for hull_type, label in HULL_TYPE_BUTTONS:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setToolTip(f"{HULL_TYPE_NAMES[hull_type]}: {HULL_DESCRIPTIONS[hull_type]}")
+            action.setStatusTip(
+                f"Carrega o casco inicial de {HULL_TYPE_NAMES[hull_type].lower()}"
+            )
+            action.triggered.connect(lambda _checked, kind=hull_type: self._load_initial(kind))
+            self.hull_type_group.addAction(action)
+            self.hull_type_actions[hull_type] = action
+
         self.open_action = QAction("Abrir casco...", self)
         self.open_action.setShortcut("Ctrl+O")
-        self.open_action.setStatusTip("Importa uma malha STL, OBJ, PLY ou VTK")
+        self.open_action.setStatusTip(
+            f"Importa uma malha {self.SUPPORTED_FORMATS_TEXT}"
+        )
         self.open_action.setIcon(self._icon(QStyle.StandardPixmap.SP_DialogOpenButton))
         self.open_action.triggered.connect(self._open_hull)
 
@@ -177,6 +224,12 @@ class MainWindow(QMainWindow):
         self.export_action.setStatusTip("Exporta o modelo visível para um novo arquivo")
         self.export_action.setIcon(self._icon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.export_action.triggered.connect(self._export_hull)
+
+        self.export_hydrostatics_action = QAction("Exportar hidrostática (CSV)...", self)
+        self.export_hydrostatics_action.setStatusTip(
+            "Salva a tabela de hidrostática calculada em um arquivo CSV"
+        )
+        self.export_hydrostatics_action.triggered.connect(self._export_hydrostatics)
 
         self.edit_nurbs_action = QAction("Editar superfície NURBS...", self)
         self.edit_nurbs_action.setStatusTip(
@@ -198,17 +251,15 @@ class MainWindow(QMainWindow):
         self.save_nurbs_action.setEnabled(False)
         self.save_nurbs_action.triggered.connect(self._save_nurbs_as_3dm)
 
-        self.draw_action = QAction("Atualizar modelo 3D", self)
+        self.draw_action = QAction("Aplicar operadores", self)
         self.draw_action.setShortcut("Ctrl+Return")
-        self.draw_action.setStatusTip("Recalcula a malha com os parâmetros atuais")
+        self.draw_action.setStatusTip("Aplica os operadores de forma aos campos alterados")
         self.draw_action.setIcon(self._icon(QStyle.StandardPixmap.SP_BrowserReload))
         self.draw_action.setEnabled(self.parameter_panel.draw_button.isEnabled())
         self.draw_action.triggered.connect(self.parameter_panel.draw_requested)
-        # A ação acompanha o botão: com malha importada ou parâmetro inválido,
+        # A ação acompanha o botão: com malha importada ou nada a aplicar,
         # o atalho de teclado fica indisponível junto com ele.
-        self.parameter_panel.draw_availability_changed.connect(
-            self.draw_action.setEnabled
-        )
+        self.parameter_panel.draw_availability_changed.connect(self.draw_action.setEnabled)
 
         self.undo_action = self.undo_stack.createUndoAction(self, "Desfazer")
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
@@ -238,6 +289,29 @@ class MainWindow(QMainWindow):
         )
         self.fit_view_action.triggered.connect(self._fit_view)
 
+        self.edges_action = self._checkable("Mostrar arestas da malha", self._toggle_edges)
+        self.zebra_action = self._checkable("Listras de zebra", self._toggle_zebra)
+        self.zebra_action.setStatusTip(
+            "Inspeciona a suavidade e a continuidade G1 do casco com listras de zebra"
+        )
+        self.sections_action = self._checkable("Curvas de seção", self._toggle_overlays)
+        self.sections_action.setStatusTip(
+            "Mostra seções transversais; devem ser suaves e sem pontos de inflexão"
+        )
+        self.curves_action = self._checkable("Curvas características", self._toggle_overlays)
+        self.curves_action.setStatusTip(
+            "Mostra convés, quinas, quilha, roda de proa e linhas de estação"
+        )
+        self.polygons_action = self._checkable("Polígonos de controle", self._toggle_overlays)
+        self.polygons_action.setStatusTip(
+            "Mostra os polígonos de controle das curvas de Bézier"
+        )
+        self.curvature_action = QAction("Gráfico de curvatura...", self)
+        self.curvature_action.setStatusTip(
+            "Compara a curvatura das curvas antes e depois dos operadores (F)"
+        )
+        self.curvature_action.triggered.connect(self._show_curvature)
+
         self.quit_action = QAction("Sair", self)
         self.quit_action.setShortcut("Ctrl+Q")
         self.quit_action.triggered.connect(self.close)
@@ -245,12 +319,19 @@ class MainWindow(QMainWindow):
         self.about_action = QAction("Sobre o Odisseu", self)
         self.about_action.triggered.connect(self._show_about)
 
+    def _checkable(self, text: str, slot) -> QAction:
+        action = QAction(text, self)
+        action.setCheckable(True)
+        action.toggled.connect(slot)
+        return action
+
     def _create_menus(self) -> None:
         """Monta a barra de menus principal."""
         file_menu = self.menuBar().addMenu("Arquivo")
         file_menu.addAction(self.new_action)
         file_menu.addAction(self.open_action)
         file_menu.addAction(self.export_action)
+        file_menu.addAction(self.export_hydrostatics_action)
         file_menu.addSeparator()
         file_menu.addAction(self.edit_nurbs_action)
         file_menu.addAction(self.finish_nurbs_action)
@@ -258,24 +339,36 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.quit_action)
 
+        hull_menu = self.menuBar().addMenu("Casco inicial")
+        for hull_type, _label in HULL_TYPE_BUTTONS:
+            hull_menu.addAction(self.hull_type_actions[hull_type])
+        hull_menu.addSeparator()
+        hull_menu.addAction(self.draw_action)
+
         edit_menu = self.menuBar().addMenu("Editar")
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
-        edit_menu.addSeparator()
-        edit_menu.addAction(self.draw_action)
 
         view_menu = self.menuBar().addMenu("Visualizar")
         view_menu.addAction(self.reset_view_action)
         view_menu.addAction(self.fit_view_action)
         view_menu.addSeparator()
+        view_menu.addAction(self.edges_action)
+        view_menu.addAction(self.zebra_action)
+        view_menu.addAction(self.sections_action)
+        view_menu.addAction(self.curves_action)
+        view_menu.addAction(self.polygons_action)
+        view_menu.addAction(self.curvature_action)
+        view_menu.addSeparator()
         view_menu.addAction(self.parameter_dock.toggleViewAction())
         view_menu.addAction(self.attribute_dock.toggleViewAction())
+        view_menu.addAction(self.hydrostatic_dock.toggleViewAction())
 
         help_menu = self.menuBar().addMenu("Ajuda")
         help_menu.addAction(self.about_action)
 
     def _create_toolbar(self) -> None:
-        """Monta a barra de ferramentas com comandos de visualização."""
+        """Monta a barra de ferramentas com comandos de arquivo e vista."""
         toolbar = QToolBar("Ferramentas principais", self)
         toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
@@ -284,145 +377,275 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.open_action)
         toolbar.addAction(self.export_action)
         toolbar.addSeparator()
+        label = QLabel("Casco inicial:")
+        label.setObjectName("secondaryText")
+        toolbar.addWidget(label)
+        for hull_type, _label in HULL_TYPE_BUTTONS:
+            toolbar.addAction(self.hull_type_actions[hull_type])
+        toolbar.addSeparator()
         toolbar.addAction(self.undo_action)
         toolbar.addAction(self.redo_action)
         toolbar.addSeparator()
         toolbar.addAction(self.reset_view_action)
         toolbar.addAction(self.fit_view_action)
-        toolbar.addSeparator()
-        profile_label = QLabel("Perfil:")
-        profile_label.setObjectName("secondaryText")
-        toolbar.addWidget(profile_label)
-        self.profile_combo = QComboBox()
-        self.profile_combo.setMinimumWidth(210)
-        self.profile_combo.setAccessibleName("Perfil de casco")
-        self.profile_combo.setToolTip(
-            "Escolha um preset; os parâmetros continuam editáveis no painel."
-        )
-        self.profile_combo.addItems([profile.name for profile in HULL_PROFILES])
-        # Entrada final usada quando os campos não correspondem a nenhum preset.
-        self.profile_combo.addItem(CUSTOM_PROFILE_NAME)
-        self.profile_combo.currentIndexChanged.connect(self._select_profile)
-        toolbar.addWidget(self.profile_combo)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
     # ------------------------------------------------------------------
-    # Perfis e sincronia do formulário
+    # Cascos iniciais e estado paramétrico
     # ------------------------------------------------------------------
-    def _select_profile(self, index: int) -> None:
-        """Aplica um preset e redesenha; a entrada final não altera valores."""
-        if not 0 <= index < len(HULL_PROFILES):
-            return
-        self._profile_stations[self._active_profile_name] = self.parameter_panel.stations.value()
-        profile = HULL_PROFILES[index]
-        self._active_profile_name = profile.name
+    def _load_initial(self, hull_type: str) -> None:
+        """Carrega um casco inicial, descartando o modelo atual."""
+        self._exit_nurbs_edit_mode()
         self.parameter_panel.set_parametric_enabled(True)
-        self.parameter_panel.set_profile_values(
-            profile,
-            self._profile_stations[profile.name],
-        )
-        self.controller.draw()
+        self._reset_samples()
+        self.controller.load_initial(hull_type)
 
-    def _select_profile_by_name(self, name: str) -> None:
-        index = self.profile_combo.findText(name)
-        if index < 0:
-            index = HULL_PROFILES.index(DEFAULT_PROFILE)
-        self.profile_combo.blockSignals(True)
-        self.profile_combo.setCurrentIndex(index)
-        self.profile_combo.blockSignals(False)
-        self._select_profile(index)
+    def _new_hull(self) -> None:
+        """Volta ao fluxo paramétrico com o casco de semi-deslocamento."""
+        self._load_initial(SEMI_DISPLACEMENT)
 
-    def _on_parameters_edited(self) -> None:
-        """Mantém o seletor de perfil honesto quando os campos mudam.
+    def _restore_initial_hull(self) -> None:
+        """Descarta as modificações e volta ao casco inicial do tipo atual."""
+        model = self.controller.model
+        self._load_initial(model.hull_type if model is not None else SEMI_DISPLACEMENT)
 
-        Editar um campo à mão deixa de corresponder ao preset exibido, então o
-        seletor passa a mostrar “Personalizado”.
-        """
-        matched = next(
-            (
-                position
-                for position, profile in enumerate(HULL_PROFILES)
-                if self.parameter_panel.matches_profile(profile)
-            ),
-            self.profile_combo.count() - 1,
-        )
-        if self.profile_combo.currentIndex() == matched:
-            return
-        self.profile_combo.blockSignals(True)
-        self.profile_combo.setCurrentIndex(matched)
-        self.profile_combo.blockSignals(False)
+    def _on_parametric_hull_generated(self) -> None:
+        """Sincroniza a interface após um novo casco paramétrico."""
+        model = self.controller.model
+        self._source_path = None
+        self._model_name = model.name
+        self._model_kind = f"Gerado no Odisseu · {HULL_TYPE_NAMES[model.hull_type]}"
+        self._model_unit = "m"
+        self.undo_stack.clear()
+        self.parameter_panel.set_parametric_enabled(True)
+        action = self.hull_type_actions.get(model.hull_type)
+        if action is not None:
+            action.setChecked(True)
+        self._refresh_model_info()
+        self._refresh_attribute_scores()
+        self._refresh_overlays()
+        self._refresh_hydrostatics()
+
+    def _on_parametric_mode_changed(self, enabled: bool) -> None:
+        self._refresh_attribute_scores()
+        self.hydrostatic_panel.set_available(enabled)
+        if not enabled:
+            self._clear_overlays()
 
     def _refresh_attribute_scores(self) -> None:
-        """Reavalia os modelos de atributo com os valores do formulário."""
-        if not self.parameter_panel.is_parametric_enabled():
+        """Reavalia os modelos de atributo com o casco atual."""
+        model = self.controller.model
+        if not self.parameter_panel.is_parametric_enabled() or model is None:
             self.attribute_panel.set_scores(None)
             return
-        self.attribute_panel.set_scores(
-            evaluate_attributes(self.parameter_panel.current_design())
-        )
+        design = HullDesign.from_parameters(model.parameters())
+        self.attribute_panel.set_scores(evaluate_attributes(design))
 
-    def _sample_designs(self, attributes: list[str], count: int) -> None:
-        """Executa o S-TLBO e exibe o primeiro projeto amostrado."""
-        self.statusBar().showMessage("Amostrando projetos com S-TLBO...")
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            samples = AttributeSampler().sample(attributes, count)
-        except ValueError as error:
-            QMessageBox.warning(self, "Amostragem inválida", str(error))
+    # ------------------------------------------------------------------
+    # Amostragem por atributos
+    # ------------------------------------------------------------------
+    def _reset_samples(self) -> None:
+        self._samples = []
+        self._sample_attributes = []
+        self.attribute_panel.set_samples([])
+
+    def _sample_designs(
+        self, attributes: list[str], count: int, preference: str, population: int
+    ) -> None:
+        """Executa o S-TLBO em segundo plano e exibe o primeiro projeto amostrado."""
+        if self._worker is not None:
             return
-        finally:
-            QApplication.restoreOverrideCursor()
+        self._worker = SamplingWorker(attributes, count, preference, population, self)
+        self._worker.progress.connect(self.attribute_panel.set_progress)
+        self._worker.sampled.connect(lambda samples: self._on_sampled(samples, attributes))
+        self._worker.failed.connect(self._on_sampling_failed)
+        self._worker.finished.connect(self._on_worker_finished)
+        self.attribute_panel.set_sampling(True)
+        self._show_status("Amostrando projetos com S-TLBO...")
+        self._worker.start()
 
+    def _cancel_sampling(self) -> None:
+        if self._worker is not None:
+            self._worker.cancel()
+            self._show_status("Cancelando a amostragem...")
+
+    def _on_worker_finished(self) -> None:
+        if self._worker is not None:
+            self._worker.deleteLater()
+        self._worker = None
+        self.attribute_panel.set_sampling(False)
+
+    def _on_sampling_failed(self, message: str) -> None:
+        QMessageBox.warning(self, "Amostragem inválida", message)
+        self._show_status("Amostragem cancelada")
+
+    def _on_sampled(self, samples: list[SampledDesign], attributes: list[str]) -> None:
         self._samples = samples
         self._sample_attributes = attributes
         self.attribute_panel.set_samples(samples)
         infeasible = sum(not sample.feasible for sample in samples)
         if infeasible:
-            self.statusBar().showMessage(
-                f"{len(samples)} projetos amostrados · {infeasible} não atingiram "
-                "todos os atributos"
+            self._show_status(
+                f"{len(samples)} projetos amostrados · {infeasible} não atenderam "
+                "a todas as restrições"
             )
         else:
-            self.statusBar().showMessage(f"{len(samples)} projetos amostrados")
+            self._show_status(f"{len(samples)} projetos amostrados")
+        if samples:
+            self._show_sampled_design(0)
 
     def _show_sampled_design(self, index: int) -> None:
-        """Carrega um projeto amostrado no formulário e redesenha o casco."""
+        """Constrói o casco do projeto amostrado e o exibe."""
+        if not 0 <= index < len(self._samples):
+            return
+        self._exit_nurbs_edit_mode()
         design = self._samples[index].design
-        attribute_names = " + ".join(
+        names = " + ".join(
             ATTRIBUTES_BY_KEY[key].label.split(" (")[0] for key in self._sample_attributes
         )
-        profile = HullProfile(
-            name=f"Amostra {index + 1} · {attribute_names}",
-            description="Projeto gerado por amostragem S-TLBO.",
-            total_length=design.total_length,
-            midship_length=design.midship_length,
-            beam=design.beam,
-            draft=design.draft,
-            bow_angle=design.bow_angle,
-            concavity=design.concavity,
-            minimum_radius=DEFAULT_MINIMUM_RADIUS,
-            # A amostragem não altera a forma; mantém a escolhida no painel.
-            freeboard=self.parameter_panel.freeboard.value(),
-            transom_ratio=self.parameter_panel.transom_ratio.value(),
-            deadrise=self.parameter_panel.deadrise.value(),
-        )
-        self._active_profile_name = profile.name
-        self.parameter_panel.set_profile_values(
-            profile, self.parameter_panel.stations.value()
-        )
+        try:
+            model = build_hull(
+                design.to_parameters(),
+                SEMI_DISPLACEMENT,
+                f"Amostra {index + 1} · {names}",
+            )
+        except ValueError as error:
+            QMessageBox.warning(self, "Projeto inválido", str(error))
+            return
         self.parameter_panel.set_parametric_enabled(True)
-        self.controller.draw()
+        self.controller.set_model(model, fit=True)
+
+    # ------------------------------------------------------------------
+    # Hidrostática
+    # ------------------------------------------------------------------
+    def _refresh_hydrostatics(self) -> None:
+        """Atualiza os calados e, se já havia resultado, recalcula a tabela."""
+        model = self.controller.model
+        if model is None or not self.parameter_panel.is_parametric_enabled():
+            return
+        had_results = bool(self.hydrostatic_panel.results())
+        if not had_results:
+            self.hydrostatic_panel.set_default_drafts(default_drafts(model))
+            return
+        self._calculate_hydrostatics(self.hydrostatic_panel.drafts())
+
+    def _calculate_hydrostatics(self, drafts: list[float]) -> None:
+        model = self.controller.model
+        if model is None or not self.parameter_panel.is_parametric_enabled():
+            return
+        try:
+            results = hydrostatic_table(model, drafts)
+        except ValueError as error:
+            self.hydrostatic_panel.clear_results()
+            self.hydrostatic_panel.show_message(str(error), "error")
+            return
+        self.hydrostatic_panel.set_results(results)
+        self.hydrostatic_panel.show_message(
+            f"Hidrostática calculada para {len(results)} calados.", "valid"
+        )
+
+    def _export_hydrostatics(self) -> None:
+        results = self.hydrostatic_panel.results()
+        if not results:
+            QMessageBox.information(
+                self,
+                "Hidrostática",
+                "Calcule a hidrostática antes de exportar a tabela.",
+            )
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Exportar hidrostática", f"{self._model_name}_hidrostatica.csv", "CSV (*.csv)"
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".csv"):
+            file_path += ".csv"
+        try:
+            with open(file_path, "w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.writer(handle, delimiter=";")
+                writer.writerow(["Propriedade", "Unidade", *[f"T{i + 1}" for i in range(len(results))]])
+                for name, (label, unit) in COLUMN_INFO.items():
+                    writer.writerow(
+                        [f"{name} · {label}", unit, *[f"{getattr(r, name):.6g}" for r in results]]
+                    )
+        except OSError as error:
+            self._show_error("Não foi possível exportar", "A tabela não pôde ser salva.", error)
+            return
+        self._show_status(f"“{Path(file_path).name}” foi exportado com sucesso")
+
+    # ------------------------------------------------------------------
+    # Inspeção de fairness
+    # ------------------------------------------------------------------
+    def _toggle_edges(self, enabled: bool) -> None:
+        self.viewer.set_show_edges(enabled)
+
+    def _toggle_zebra(self, enabled: bool) -> None:
+        self.viewer.set_zebra(enabled)
+
+    def _toggle_overlays(self, _checked: bool = False) -> None:
+        self._refresh_overlays()
+
+    def _clear_overlays(self) -> None:
+        for name in ("sections", "curves", "polygons"):
+            self.viewer.set_overlay(name, None)
+
+    def _refresh_overlays(self) -> None:
+        """Redesenha as sobreposições ligadas, para o casco atual."""
+        model = self.controller.model
+        if model is None or not self.parameter_panel.is_parametric_enabled():
+            self._clear_overlays()
+            return
+
+        def mirrored(curves: dict[str, np.ndarray]) -> list[np.ndarray]:
+            lines = []
+            for points in curves.values():
+                lines.append(points)
+                other = points.copy()
+                other[:, 1] *= -1.0
+                lines.append(other)
+            return lines
+
+        if self.sections_action.isChecked():
+            sections = model.section_polylines(self.SECTION_COUNT)
+            self.viewer.set_overlay(
+                "sections", [np.concatenate(sections)] if sections else None, "#7bd88f", 1.5
+            )
+        else:
+            self.viewer.set_overlay("sections", None)
+        if self.curves_action.isChecked():
+            self.viewer.set_overlay("curves", mirrored(model.feature_curves()), "#ffd166", 3.0)
+        else:
+            self.viewer.set_overlay("curves", None)
+        if self.polygons_action.isChecked():
+            self.viewer.set_overlay(
+                "polygons", mirrored(model.control_polygons()), "#ff6b6b", 1.5
+            )
+        else:
+            self.viewer.set_overlay("polygons", None)
+
+    def _show_curvature(self) -> None:
+        model = self.controller.model
+        if model is None or not self.parameter_panel.is_parametric_enabled():
+            QMessageBox.information(
+                self,
+                "Gráfico de curvatura",
+                "O gráfico de curvatura só se aplica a cascos paramétricos.",
+            )
+            return
+        previous = self.controller.previous or model
+        CurvatureDialog(previous, model, self).exec()
 
     # ------------------------------------------------------------------
     # Arquivos
     # ------------------------------------------------------------------
     def _open_hull(self) -> None:
         """Seleciona e importa um arquivo de malha 3D."""
+        patterns = " ".join(f"*{extension}" for extension in self.SUPPORTED_MESH_EXTENSIONS)
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Abrir casco",
             "",
-            "Malhas 3D (*.stl *.obj *.ply *.vtk *.vtp *.3dm);;Todos os arquivos (*)",
+            f"Malhas 3D ({patterns});;Todos os arquivos (*)",
         )
         if file_path:
             self._load_hull_path(Path(file_path))
@@ -433,20 +656,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Formato não suportado",
-                "Escolha uma malha STL, OBJ, PLY, VTK, VTP ou um arquivo .3dm do Rhino.",
+                f"Escolha um arquivo {self.SUPPORTED_FORMATS_TEXT}.",
             )
             return
 
-        self._exit_nurbs_edit_mode()
-        self._show_status(f"Abrindo {file_path.name}...")
-        omission_note = ""
+        self._show_busy_status(f"Abrindo {file_path.name}...")
+        report: RhinoImportReport | None = None
         try:
             if file_path.suffix.lower() == ".3dm":
                 polydata, report = read_3dm_as_polydata(file_path)
-                self.viewer.set_mesh(polydata)
-                omission_note = report.describe_omissions()
+                mesh = HullViewer.displayable(polydata)
             else:
-                self.viewer.load_mesh(file_path)
+                mesh = HullViewer.read_mesh_file(file_path)
         except Exception as error:  # PyVista/VTK/rhino3dm usam exceções próprias por leitor.
             self._show_error(
                 "Não foi possível abrir o modelo",
@@ -456,16 +677,29 @@ class MainWindow(QMainWindow):
             self._show_status("Falha ao abrir o modelo")
             return
 
+        # Só agora o modelo atual é descartado: uma leitura que falha não pode
+        # encerrar uma edição de superfície que ainda estava em andamento.
+        self._exit_nurbs_edit_mode()
+        self.viewer.set_mesh(mesh, hull=False)
         self._source_path = file_path
         self._model_name = file_path.stem
         self._model_kind = f"Malha {file_path.suffix[1:].upper()} importada"
+        # Só o .3dm declara a unidade; STL, OBJ e afins guardam números puros.
+        self._model_unit = report.unit if report is not None else None
         self.undo_stack.clear()
         self.parameter_panel.set_parametric_enabled(False)
+        self.hull_type_group.setExclusive(False)
+        for action in self.hull_type_actions.values():
+            action.setChecked(False)
+        self.hull_type_group.setExclusive(True)
         self.viewer.reset_view()
         self._refresh_model_info()
-        if omission_note:
-            QMessageBox.information(self, "Importado com ressalvas", omission_note)
-        self._show_status(f"“{file_path.name}” foi importado com sucesso")
+        if report is not None and report.has_omissions:
+            QMessageBox.information(
+                self, "Importado com ressalvas", report.describe_omissions()
+            )
+        detail = f" · {report.summary()}" if report is not None else ""
+        self._show_status(f"“{file_path.name}” foi importado com sucesso{detail}")
 
     def _export_hull(self) -> None:
         """Exporta a superfície atual sem alterar o arquivo de origem."""
@@ -557,16 +791,18 @@ class MainWindow(QMainWindow):
         self._source_path = Path(file_path)
         self._model_name = f"{Path(file_path).stem} (editando NURBS)"
         self._model_kind = "Superfície NURBS em edição"
+        self._model_unit = surface.unit
 
-        self.parameter_panel.set_parametric_enabled(False)
         # Uma transformação rígida aplicada durante a edição seria desfeita
         # sem aviso no próximo arraste, porque a retesselação sempre parte
         # das coordenadas originais da superfície: as duas edições não se
         # compõem neste MVP, então mantemos só uma disponível por vez.
-        self.parameter_panel.transform_group.setEnabled(False)
+        self.parameter_panel.set_transform_enabled(False)
+        self.parameter_panel.set_parametric_enabled(False)
         self.undo_stack.clear()
         self._refresh_nurbs_preview()
         self._show_control_point_handles()
+        self._refresh_model_info()
 
         self.finish_nurbs_action.setEnabled(True)
         self.save_nurbs_action.setEnabled(True)
@@ -578,7 +814,7 @@ class MainWindow(QMainWindow):
     def _refresh_nurbs_preview(self) -> None:
         """Retesela a superfície atual e substitui a malha exibida por ela."""
         mesh = self._nurbs_surface.tessellate()
-        self.viewer.set_mesh(pv.PolyData(mesh.vertices, mesh.pyvista_faces))
+        self.viewer.set_mesh(pv.PolyData(mesh.vertices, mesh.pyvista_faces), hull=False)
 
     def _show_control_point_handles(self) -> None:
         points = self._nurbs_surface.control_points().reshape(-1, 3)
@@ -601,7 +837,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             # A malha exibida não é a que esperávamos (não deveria acontecer
             # em uso normal); refaz o ator do zero para não travar a edição.
-            self.viewer.set_mesh(pv.PolyData(mesh.vertices, mesh.pyvista_faces))
+            self.viewer.set_mesh(pv.PolyData(mesh.vertices, mesh.pyvista_faces), hull=False)
 
     def _finish_nurbs_edit(self) -> None:
         """Sai do modo de edição, mantendo o resultado como o modelo atual."""
@@ -609,9 +845,12 @@ class MainWindow(QMainWindow):
             return
         self.viewer.clear_control_point_handles()
         self._nurbs_edit_active = False
+        # A malha exibida passa a ser o resultado; a superfície não é mais
+        # editável nem salvável como .3dm, então não precisa ficar na memória.
+        self._nurbs_surface = None
         self.finish_nurbs_action.setEnabled(False)
         self.save_nurbs_action.setEnabled(False)
-        self.parameter_panel.transform_group.setEnabled(True)
+        self.parameter_panel.set_transform_enabled(True)
         if self._source_path is not None:
             self._model_name = f"{self._source_path.stem} (NURBS editado)"
         self._model_kind = "Superfície NURBS editada"
@@ -654,29 +893,11 @@ class MainWindow(QMainWindow):
         self._nurbs_surface = None
         self.finish_nurbs_action.setEnabled(False)
         self.save_nurbs_action.setEnabled(False)
-        self.parameter_panel.transform_group.setEnabled(True)
+        self.parameter_panel.set_transform_enabled(True)
 
     # ------------------------------------------------------------------
     # Modelo e histórico
     # ------------------------------------------------------------------
-    def _new_hull(self) -> None:
-        """Volta ao fluxo paramétrico com o perfil padrão da aplicação."""
-        self._exit_nurbs_edit_mode()
-        self.parameter_panel.set_parametric_enabled(True)
-        self.parameter_panel.reset_defaults()
-        self._active_profile_name = DEFAULT_PROFILE.name
-        self._profile_stations[self._active_profile_name] = 64
-        self._select_profile_by_name(self._active_profile_name)
-
-    def _on_parametric_hull_generated(self) -> None:
-        """Sincroniza a interface após um recálculo paramétrico."""
-        self._source_path = None
-        self._model_name = self.profile_combo.currentText()
-        self._model_kind = "Gerado no Odisseu"
-        self.undo_stack.clear()
-        self.parameter_panel.set_parametric_enabled(True)
-        self._refresh_model_info()
-
     def _apply_transform(self, parameters: TransformParameters) -> None:
         """Registra uma transformação reversível sobre o objeto atual."""
         try:
@@ -712,7 +933,12 @@ class MainWindow(QMainWindow):
             summary.points,
             summary.cells,
             summary.dimensions,
-            "m" if self._source_path is None else "unidades do arquivo",
+            self._model_unit or "unidades do arquivo",
+        )
+        self.parameter_panel.set_length_unit(self._model_unit)
+        # Sem arquivo de origem, o modelo é o casco gerado aqui, com proa em +X.
+        self.viewer.set_axis_titles(
+            self._model_unit, hull_axes=self._source_path is None
         )
         self.setWindowTitle(f"{self._model_name} — Odisseu")
 
@@ -734,7 +960,8 @@ class MainWindow(QMainWindow):
                 event.acceptProposedAction()
                 return
         self._show_status(
-            "Nenhum arquivo solto tem formato de malha suportado (STL, OBJ, PLY, VTK, VTP)"
+            "Nenhum arquivo solto tem formato suportado "
+            f"({self.SUPPORTED_FORMATS_TEXT})"
         )
 
     # ------------------------------------------------------------------
@@ -754,6 +981,15 @@ class MainWindow(QMainWindow):
         """Publica uma mensagem temporária, que não sobrevive ao contexto."""
         self.statusBar().showMessage(message, self.STATUS_TIMEOUT_MS)
 
+    def _show_busy_status(self, message: str) -> None:
+        """Mostra uma mensagem antes de uma operação que bloqueia a interface.
+
+        Sem o repaint, a mensagem só seria desenhada depois da operação, quando
+        já tivesse sido substituída pelo resultado.
+        """
+        self.statusBar().showMessage(message)
+        self.statusBar().repaint()
+
     def _show_error(self, title: str, message: str, error: Exception) -> None:
         """Mostra um erro legível, com o detalhe técnico em segundo plano."""
         dialog = QMessageBox(self)
@@ -769,11 +1005,16 @@ class MainWindow(QMainWindow):
             self,
             "Sobre o Odisseu",
             "Odisseu · MVP\n\n"
-            "Modelagem paramétrica e visualização de cascos.\n"
+            "Modelagem paramétrica e por atributos de cascos de iates, "
+            "segundo o ModiYacht (Khan, 2017): operadores de forma com "
+            "abordagem iterativa, amostragem S-TLBO e hidrostática.\n"
             "Suporta importação e exportação de malhas 3D.",
         )
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Encerra o renderizador VTK antes de fechar a janela."""
+        """Encerra a amostragem e o renderizador VTK antes de fechar a janela."""
+        if self._worker is not None:
+            self._worker.cancel()
+            self._worker.wait(5000)
         self.viewer.close()
         super().closeEvent(event)

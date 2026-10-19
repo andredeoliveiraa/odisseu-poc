@@ -1,0 +1,176 @@
+{
+  "description": "Modelos de atributo (Figura 5.6): Y = a0 + Σ linear·x + Σ cube_root·cbrt(x) + Σ quadratic·x² + Σ interaction·xi·xj, com x padronizado (Tabela 4.1).",
+  "variables": [
+    "Le",
+    "Lm",
+    "Lr",
+    "Be",
+    "Bm",
+    "Br",
+    "De",
+    "Dm",
+    "Dr",
+    "beta",
+    "theta"
+  ],
+  "models": [
+    {
+      "key": "strong",
+      "label": "Strong (Forte)",
+      "intercept": 0.36,
+      "linear": {},
+      "cube_root": {
+        "Be": 0.07,
+        "Bm": 0.07,
+        "De": 0.06,
+        "Dm": 0.08,
+        "theta": 0.06,
+        "Le": -0.04
+      },
+      "quadratic": {},
+      "interaction": []
+    },
+    {
+      "key": "speedy",
+      "label": "Speedy (Rápido)",
+      "intercept": 0.38,
+      "linear": {},
+      "cube_root": {
+        "Le": 0.09,
+        "theta": -0.09,
+        "Br": -0.06,
+        "De": -0.05,
+        "beta": 0.04,
+        "Lm": 0.03
+      },
+      "quadratic": {},
+      "interaction": []
+    },
+    {
+      "key": "comfortable",
+      "label": "Comfortable (Confortável)",
+      "intercept": 0.4,
+      "linear": {},
+      "cube_root": {
+        "Bm": 0.07,
+        "Lm": 0.07,
+        "Lr": 0.06,
+        "Be": 0.05,
+        "De": 0.05,
+        "beta": -0.03
+      },
+      "quadratic": {},
+      "interaction": []
+    },
+    {
+      "key": "aesthetic",
+      "label": "Aesthetic (Estético)",
+      "intercept": 0.52,
+      "linear": {},
+      "cube_root": {
+        "beta": 0.08,
+        "theta": -0.05,
+        "Le": 0.05,
+        "Be": -0.05
+      },
+      "quadratic": {
+        "theta": -0.03,
+        "Lm": -0.02
+      },
+      "interaction": []
+    },
+    {
+      "key": "usual",
+      "label": "Usual (Comum)",
+      "intercept": 0.74,
+      "linear": {},
+      "cube_root": {},
+      "quadratic": {
+        "Le": -0.05,
+        "Lm": -0.05,
+        "Be": -0.05,
+        "Bm": -0.05,
+        "De": -0.05,
+        "Dm": -0.05
+      },
+      "interaction": []
+    },
+    {
+      "key": "aggressive",
+      "label": "Aggressive (Agressivo)",
+      "intercept": 0.34,
+      "linear": {},
+      "cube_root": {
+        "theta": -0.09,
+        "Le": 0.08,
+        "De": 0.06,
+        "Be": -0.06,
+        "beta": -0.05
+      },
+      "quadratic": {},
+      "interaction": []
+    },
+    {
+      "key": "compact",
+      "label": "Compact (Compacto)",
+      "intercept": 0.38,
+      "linear": {},
+      "cube_root": {
+        "Lm": -0.09,
+        "Lr": -0.07,
+        "Le": -0.04,
+        "Dm": 0.04,
+        "Bm": -0.03
+      },
+      "quadratic": {},
+      "interaction": []
+    },
+    {
+      "key": "modern",
+      "label": "Modern (Moderno)",
+      "intercept": 0.36,
+      "linear": {},
+      "cube_root": {
+        "beta": 0.09,
+        "theta": -0.07,
+        "Lm": 0.04,
+        "Br": -0.05,
+        "Be": 0.04
+      },
+      "quadratic": {},
+      "interaction": []
+    },
+    {
+      "key": "charismatic",
+      "label": "Charismatic (Carismático)",
+      "intercept": 0.46,
+      "linear": {},
+      "cube_root": {
+        "De": 0.07,
+        "Dm": 0.06,
+        "Lm": -0.05,
+        "Be": 0.05
+      },
+      "quadratic": {
+        "theta": -0.04
+      },
+      "interaction": []
+    },
+    {
+      "key": "cute",
+      "label": "Cute (Fofo)",
+      "intercept": 0.38,
+      "linear": {},
+      "cube_root": {
+        "Le": -0.05,
+        "Lm": -0.06,
+        "Be": 0.07,
+        "beta": -0.06,
+        "theta": 0.06,
+        "Dm": 0.04
+      },
+      "quadratic": {},
+      "interaction": []
+    }
+  ]
+}
