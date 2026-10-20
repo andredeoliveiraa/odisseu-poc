@@ -229,7 +229,7 @@ class ParameterPanel(QWidget):
         self.draw_button.setMinimumHeight(42)
         self.draw_button.setToolTip(
             "Aplica os operadores de forma aos parâmetros alterados. "
-            "Atalho: Enter em qualquer campo."
+            "Os operadores também são aplicados automaticamente ao sair de qualquer campo."
         )
         self.draw_button.setAccessibleName("Aplicar operadores")
         self.draw_button.clicked.connect(self._request_draw)
@@ -368,7 +368,7 @@ class ParameterPanel(QWidget):
         self._fields[name] = field
         field.valueChanged.connect(lambda _value, key=name: self._on_edited(key))
         field.input_rejected.connect(self._on_input_rejected)
-        field.lineEdit().returnPressed.connect(self._request_draw)
+        field.lineEdit().editingFinished.connect(self._request_draw)
 
     def _create_group_1(self) -> CollapsibleSection:
         section = CollapsibleSection("Grupo 1 · Operadores de forma", self, expanded=True)
@@ -519,10 +519,18 @@ class ParameterPanel(QWidget):
         self.apply_transform_button = QPushButton("Aplicar transformação")
         self.apply_transform_button.setObjectName("secondaryButton")
         self.apply_transform_button.setToolTip(
-            "Aplica os valores acima ao objeto. A operação pode ser desfeita com Ctrl+Z."
+            "Aplica os valores acima ao objeto. "
+            "Atalho: Enter em qualquer campo. A operação pode ser desfeita com Ctrl+Z."
         )
         self.apply_transform_button.setAccessibleName("Aplicar transformação")
         self.apply_transform_button.clicked.connect(self._request_transform)
+
+        for _tf in (
+            self.translation_x, self.translation_y, self.translation_z,
+            self.rotation_x, self.rotation_y, self.rotation_z,
+            self.uniform_scale,
+        ):
+            _tf.lineEdit().returnPressed.connect(self._request_transform)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.clear_transform_button)
@@ -689,7 +697,7 @@ class ParameterPanel(QWidget):
             return
         if pending:
             self._show_feedback(
-                "Parâmetros alterados. Aplique os operadores para ver o resultado.",
+                "Parâmetros alterados — saia do campo ou pressione Enter para aplicar.",
                 "warning",
             )
         elif not self._rejection_timer.isActive():
