@@ -3,8 +3,8 @@
 O painel reúne os diálogos do ModiYacht: os operadores do **Grupo 1**
 (alongamento, alargamento, aprofundamento, quinas, quilha, ângulos e roda de
 proa) e do **Grupo 2** (concavidade e raio mínimo de curvatura das estações).
-Os campos mostram os valores medidos no casco atual; só os campos alterados
-pelo usuário são aplicados ao clicar em **Aplicar operadores**.
+Os campos mostram os valores medidos no casco atual; os operadores são
+aplicados automaticamente ao sair de qualquer campo ou pressionar Enter.
 """
 
 from __future__ import annotations
@@ -205,9 +205,9 @@ class ParameterPanel(QWidget):
         layout.addWidget(title)
 
         description = QLabel(
-            "Altere os valores dos parâmetros desejados e clique em “Aplicar "
-            "operadores”. Só os campos alterados são aplicados; sem alterações, "
-            "o casco permanece como está. Medidas em metros e graus."
+            “Altere os valores dos parâmetros desejados. Os operadores são “
+            “aplicados automaticamente ao sair do campo ou pressionar Enter. “
+            “Só os campos alterados são aplicados; medidas em metros e graus.”
         )
         description.setObjectName("secondaryText")
         description.setWordWrap(True)
@@ -224,15 +224,13 @@ class ParameterPanel(QWidget):
         self.validation_label.setObjectName("validationLabel")
         layout.addWidget(self.validation_label)
 
-        self.draw_button = QPushButton("Aplicar operadores")
+        # Widget mantido fora do layout: usado pela main_window para a ação de
+        # menu "Aplicar operadores" via draw_availability_changed e isEnabled().
+        self.draw_button = QPushButton("Aplicar operadores", self)
         self.draw_button.setObjectName("primaryButton")
-        self.draw_button.setMinimumHeight(42)
-        self.draw_button.setToolTip(
-            "Aplica os operadores de forma aos parâmetros alterados. "
-            "Os operadores também são aplicados automaticamente ao sair de qualquer campo."
-        )
         self.draw_button.setAccessibleName("Aplicar operadores")
         self.draw_button.clicked.connect(self._request_draw)
+        self.draw_button.hide()
 
         self.reset_button = QPushButton("Restaurar casco")
         self.reset_button.setMinimumHeight(36)
@@ -240,10 +238,7 @@ class ParameterPanel(QWidget):
         self.reset_button.setAccessibleName("Restaurar casco inicial")
         self.reset_button.clicked.connect(self.reset_requested)
 
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.reset_button)
-        button_layout.addWidget(self.draw_button, 1)
-        layout.addLayout(button_layout)
+        layout.addWidget(self.reset_button)
 
         self.mode_hint = QLabel()
         self.mode_hint.setObjectName("modeHint")
@@ -516,15 +511,6 @@ class ParameterPanel(QWidget):
         self.clear_transform_button.setAccessibleName("Limpar campos de transformação")
         self.clear_transform_button.clicked.connect(self.clear_transform_fields)
 
-        self.apply_transform_button = QPushButton("Aplicar transformação")
-        self.apply_transform_button.setObjectName("secondaryButton")
-        self.apply_transform_button.setToolTip(
-            "Aplica os valores acima ao objeto. "
-            "Atalho: Enter em qualquer campo. A operação pode ser desfeita com Ctrl+Z."
-        )
-        self.apply_transform_button.setAccessibleName("Aplicar transformação")
-        self.apply_transform_button.clicked.connect(self._request_transform)
-
         for _tf in (
             self.translation_x, self.translation_y, self.translation_z,
             self.rotation_x, self.rotation_y, self.rotation_z,
@@ -532,10 +518,7 @@ class ParameterPanel(QWidget):
         ):
             _tf.lineEdit().returnPressed.connect(self._request_transform)
 
-        buttons = QHBoxLayout()
-        buttons.addWidget(self.clear_transform_button)
-        buttons.addWidget(self.apply_transform_button, 1)
-        section.add_layout(buttons)
+        section.add_widget(self.clear_transform_button)
         return section
 
     # ------------------------------------------------------------------
@@ -653,10 +636,12 @@ class ParameterPanel(QWidget):
             return
         self._refresh_draw_state()
         self.parameters_changed.emit()
+        self._request_draw()
 
     def _on_edited_concavity(self, _index: int) -> None:
         self._refresh_draw_state()
         self.parameters_changed.emit()
+        self._request_draw()
 
     def pending_parameters(self) -> dict[str, float]:
         """Parâmetros alterados pelo usuário (valor desejado de cada um)."""
