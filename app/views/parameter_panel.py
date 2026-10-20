@@ -205,9 +205,9 @@ class ParameterPanel(QWidget):
         layout.addWidget(title)
 
         description = QLabel(
-            “Altere os valores dos parâmetros desejados. Os operadores são “
-            “aplicados automaticamente ao sair do campo ou pressionar Enter. “
-            “Só os campos alterados são aplicados; medidas em metros e graus.”
+            "Altere os valores dos parâmetros desejados. Os operadores são "
+            "aplicados automaticamente ao sair do campo ou pressionar Enter. "
+            "Só os campos alterados são aplicados; medidas em metros e graus."
         )
         description.setObjectName("secondaryText")
         description.setWordWrap(True)
@@ -563,7 +563,7 @@ class ParameterPanel(QWidget):
             label.setToolTip(tooltip)
 
     def set_transform_enabled(self, enabled: bool) -> None:
-        """Liga ou desliga o grupo “Transformar objeto”, mantendo o aviso coerente."""
+        """Liga ou desliga o grupo "Transformar objeto", mantendo o aviso coerente."""
         self._transform_enabled = enabled
         self.transform_group.setEnabled(enabled)
         self._refresh_mode_hint()
@@ -711,7 +711,7 @@ class ParameterPanel(QWidget):
         self._set_field_error(field, True)
         self._rejected_field = field
         self._show_feedback(
-            f"“{field.accessibleName()}” aceita apenas {field.range_description()}. "
+            f'"{field.accessibleName()}" aceita apenas {field.range_description()}. '
             "O valor digitado foi recusado.",
             "error",
         )
@@ -778,15 +778,15 @@ class ParameterPanel(QWidget):
             return
         if self._transform_enabled:
             text = (
-                "Este é um modelo importado. Os parâmetros do casco não se aplicam a "
-                "ele, mas você pode usar “Transformar objeto” abaixo. Carregue um casco "
-                "inicial (SD, P ou D) para voltar à edição paramétrica."
+                'Este é um modelo importado. Os parâmetros do casco não se aplicam a '
+                'ele, mas você pode usar “Transformar objeto” abaixo. Carregue um casco '
+                'inicial (SD, P ou D) para voltar à edição paramétrica.'
             )
         else:
             text = (
-                "Superfície NURBS em edição. Arraste as esferas na cena 3D para mover "
-                "os pontos de controle. Use “Concluir edição de superfície”, no menu "
-                "Arquivo, para voltar a transformar o objeto."
+                'Superfície NURBS em edição. Arraste as esferas na cena 3D para mover '
+                'os pontos de controle. Use “Concluir edição de superfície”, no menu '
+                'Arquivo, para voltar a transformar o objeto.'
             )
         self.mode_hint.setText(text)
         self.mode_hint.show()
