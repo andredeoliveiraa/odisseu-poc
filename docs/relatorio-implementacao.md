@@ -114,3 +114,58 @@ Limites que permanecem:
 | Testes unitários de `rhino_export` ausentes | Novo arquivo `tests/test_rhino_export.py` com 17 testes: grau/nós/coordenadas da NurbsCurve, espelhamento _mirror_y (y negado, x/z inalterados), 5 camadas com nomes corretos, 25 curvas totais, contagens por camada (6 quina, 12 estações, 1 proa), grau 3 em todas, require_rhino3dm sem exceção com biblioteca instalada. |
 | Testes de `SamplingResult.collapse` ausentes | 4 novos testes em `test_sampling.py`: tipo int, zero após reparo bem-sucedido (N=30), igualdade com `collapse_penalty()` sem reparo e ausência de UserWarning no caso normal. |
 | Total de testes | 180 (eram 163 após a terceira rodada). |
+
+## 10. Lacuna remanescente: modelos GMDH reais de Dogan
+
+### Situação atual
+
+O único item funcional ainda não implementado conforme a tese são os coeficientes originais dos modelos matemáticos de atributos (Figura 5.6, Dogan 2017). O código atual usa um **modelo substituto** — um único polinômio por atributo sobre as 11 variáveis padronizadas da Tabela 4.1, calibrado para que cada atributo e as combinações usuais sejam alcançáveis. Os valores de saída diferem dos de Dogan.
+
+A referência original é: Doğan, K. M. e Günpınar, E., *Learning Yacht Hull Adjectives and Their Relationship with Hull Surface Geometry Using GMDH-Type Neural Networks for Human Oriented Smart Design*, Ocean Engineering, v. 145, pp. 215–229, 2017. DOI: 10.1016/j.oceaneng.2017.08.056. O artigo possui material suplementar ("Mathematical Models") no ResearchGate que contém as equações completas.
+
+### Estrutura dos modelos reais
+
+Os modelos de Dogan são redes GMDH em cascata: cada atributo Yⁱ é calculado por uma cadeia de neurônios intermediários N2, N3, …, N_k, onde cada neurônio combina dois termos — que podem ser variáveis de entrada ou a saída do neurônio seguinte:
+
+```
+N_k = a₀ + a₁·V₁ + a₂·V₂ + a₃·V₁·V₂
+```
+
+Os termos V₁ e V₂ podem ser a variável direta, sua raiz cúbica (`cubert`) ou a saída de N_{k+1}. O `AttributeModel` atual representa apenas um único neurônio; implementar os modelos reais requer uma classe de cascata.
+
+### Cobertura da transcrição disponível (Figura 5.6)
+
+| Atributo | Equações visíveis na figura | Implementável com os dados atuais |
+|---|---|---|
+| Strong | Completo: Y¹ e N2–N11 | Sim, se o mapeamento de variáveis for confirmado |
+| Comfortable | Completo: Y³ e N2–N12 | Sim |
+| Modern | Completo: Y⁸ e N2–N11 | Sim |
+| Cute | Completo: Y¹⁰ e N2–N11 | Sim |
+| Speedy | Parcial: Y², N2–N5 e N31–N33 | Não — faltam N6–N30 |
+| Aesthetic | Parcial: Y⁴, N2–N5 e N31–N33 | Não — faltam N6–N30 |
+| Usual | Parcial: Y⁵, N2–N5 e N11–N14 | Não — faltam N6–N10 |
+| Aggressive | Parcial: Y⁶, N2–N5 e N13–N15 | Não — faltam N6–N12 |
+| Compact | Parcial: Y⁷, N2, N4–N7, N27–N29 | Não — faltam vários nós intermediários |
+| Charismatic | Parcial: Y⁹, N2–N5 e N31–N33 | Não — faltam N6–N30 |
+
+### Problema de mapeamento de variáveis
+
+Os modelos usam nomes que não correspondem diretamente às 11 variáveis atuais (`Le, Lm, Lr, Be, Bm, Br, De, Dm, Dr, beta, theta`):
+
+| Nome em Dogan | Hipótese mais provável | Presente no espaço atual |
+|---|---|---|
+| `De_2`, `Dm_1`, `Dm_2`, `Dr_1` | Razões adimensionais (p. ex. De/Be, Dm/Lm) | Não como variável direta |
+| `Re_1`, `Rm_1`, `Rr_1`, `Rr_0` | Raios de curvatura das estações (Rek, Rms, Rrs) | Não — excluídos do espaço de amostragem |
+| `a`, `a1` | Ângulo de tosamento α (≈ `beta`) ou variante | Parcialmente |
+| `R5`, `H` | Raio de estação específico; altura da roda de proa | Não como variável de projeto |
+
+Os parâmetros de raio (`Re_1`, `Rm_1`, `Rr_1`) estão fora do `DESIGN_VARIABLES` atual. Inclui-los ampliaria o espaço de 11 para até 14–15 dimensões, com impacto no S-TLBO e em todo o fluxo de amostragem.
+
+### O que é preciso para implementar
+
+1. **Material suplementar de Dogan 2017** — fornece as equações intermediárias ausentes para os seis atributos parciais e confirma a convenção de normalização das variáveis.
+2. **Mapeamento confirmado** — relacionar `De_2`, `Rm_1`, `a` etc. às variáveis do modelo; sem isso, implementar a transcrição com mapeamento errado produz resultados piores que o substituto.
+3. **Extensão da arquitetura** — adicionar `CascadedAttributeModel` ou equivalente ao `attributes.py` para suportar cadeias de neurônios; o JSON de coeficientes em `app/data/attribute_models.json` precisaria de novo esquema.
+4. **Decisão sobre o espaço de projeto** — incluir ou não os parâmetros de raio no `DESIGN_VARIABLES`; se incluídos, recalibrar `YACHT_HULL_SPACE` e retestar o S-TLBO.
+
+Enquanto o material suplementar não estiver disponível, o substituto permanece funcional para uso qualitativo.
