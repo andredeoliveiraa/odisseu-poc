@@ -82,6 +82,74 @@ FEATURE_RANGES: dict[str, FeatureRange] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Variáveis e estatísticas de normalização — Dogan (2017), Figura 9
+# ---------------------------------------------------------------------------
+# Transcritas da Figura 9 (pág. 11), calculadas sobre os 54 cascos viáveis.
+# VERIFICAR os valores contra a figura original antes de usar em produção;
+# a leitura da tabela de duas colunas pode ter imprecisões de alinhamento.
+
+#: As 25 variáveis de projeto de Dogan (2017) após eliminação pelo Survey 2.
+#: Nomes gregos seguem a convenção do código (alpha, beta, theta, alpha2).
+#: R4 e R5 correspondem a R4e/R5e — únicas variantes restantes após Survey 2.
+DOGAN_VARIABLES: tuple[str, ...] = (
+    # Região de entrada
+    "Le", "Be", "De1", "De2", "R0e", "R1e", "R4", "R5",
+    # Região do meio
+    "Lm", "Bm", "Dm1", "Dm2", "R1m",
+    # Região de popa
+    "Lr", "Br", "Dr1", "Dr2", "R0r", "R1r",
+    # Globais
+    "a1", "H", "alpha", "alpha2", "theta", "beta",
+)
+
+#: Média (μ) e desvio padrão (σ) de cada variável — Figura 9 de Dogan (2017).
+#: Calculados sobre os 54 cascos viáveis (Survey 2, pág. 11).
+#: Formato: ``{nome: (μ, σ)}``.
+DOGAN_VARIABLE_STATS: dict[str, tuple[float, float]] = {
+    "alpha":  (1.50,  1.51),
+    "Le":     (4.70,  2.04),
+    "Lm":     (6.97,  3.18),
+    "Lr":     (5.03,  2.42),
+    "Be":     (2.33,  0.76),
+    "Bm":     (2.42,  0.63),
+    "Br":     (1.17,  0.28),
+    "De1":    (1.55,  0.35),
+    "De2":    (0.78,  0.18),
+    "Dm1":    (1.63,  0.32),
+    "Dm2":    (0.78,  0.18),
+    "Dr1":    (1.41,  0.39),
+    "Dr2":    (0.76,  0.20),
+    "a1":     (0.50,  0.24),
+    "H":      (0.58,  0.31),
+    "theta":  (89.81, 24.72),
+    "alpha2": (90.00, 24.72),
+    "beta":   (49.72, 11.18),
+    "R4":     (2.00,  0.82),
+    "R5":     (2.00,  0.82),
+    "R0r":    (1.52,  0.67),
+    "R0e":    (1.76,  0.70),
+    "R1r":    (1.67,  0.78),
+    "R1m":    (1.70,  0.74),
+    "R1e":    (1.78,  0.72),
+}
+
+
+def dogan_standardize(values: Mapping[str, float]) -> dict[str, float]:
+    """Padroniza variáveis pelo z-score de Dogan (2017), Figura 9.
+
+    ``z = (x − μ) / σ``
+
+    ``values`` pode conter apenas um subconjunto das 25 variáveis; a função
+    padroniza somente as chaves presentes em :data:`DOGAN_VARIABLE_STATS`.
+    """
+    return {
+        name: (float(val) - DOGAN_VARIABLE_STATS[name][0]) / DOGAN_VARIABLE_STATS[name][1]
+        for name, val in values.items()
+        if name in DOGAN_VARIABLE_STATS
+    }
+
+
 @dataclass(frozen=True)
 class HullDesign:
     """Variáveis de projeto do casco (as 11 da Tabela 4.1)."""
