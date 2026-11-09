@@ -150,6 +150,100 @@ def dogan_standardize(values: Mapping[str, float]) -> dict[str, float]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Subconjuntos de entrada por adjective — Dogan (2017), págs. 15-16
+# ---------------------------------------------------------------------------
+# Transcritos das págs. 15-16. VERIFICAR contra o texto original antes de
+# fixar em produção. Notação: Re0→R0e, Rm1→R1m, Rr1→R1r, Re1→R1e, etc.
+
+#: Rótulos descritivos dos adjectives A1–A10.
+ADJECTIVE_LABELS: dict[str, str] = {
+    "A1":  "Strong (Forte)",
+    "A2":  "Speedy (Rápido)",
+    "A3":  "Comfortable (Confortável)",
+    "A4":  "Aesthetic (Estético)",
+    "A5":  "Usual (Comum)",
+    "A6":  "Aggressive (Agressivo)",
+    "A7":  "Compact (Compacto)",
+    "A8":  "Modern (Moderno)",
+    "A9":  "Charismatic (Carismático)",
+    "A10": "Cute (Fofo)",
+}
+
+#: Variáveis de entrada de cada adjective (págs. 15-16 de Dogan, 2017).
+#: Todos os nomes pertencem a :data:`DOGAN_VARIABLE_STATS`.
+ADJECTIVE_SUBSETS: dict[str, tuple[str, ...]] = {
+    "A1":  ("Le", "Lm", "Lr", "Be", "Br", "Dm1", "Dr1", "De2",
+            "R1e", "R1r", "theta", "alpha"),
+    "A2":  ("Le", "Lm", "Be", "Dm1", "R0e", "R1m", "R1r",
+            "H", "a1", "alpha", "alpha2", "theta"),
+    "A3":  ("Le", "Lm", "Lr", "Be", "Bm", "Dr1", "beta", "theta"),
+    "A4":  ("Le", "Lm", "Lr", "Be", "Bm", "Br", "Dr1", "De2", "Dm2",
+            "R0e", "R1e", "R1m", "R1r", "R4", "H", "alpha2", "beta"),
+    "A5":  ("Lm", "Lr", "Be", "Bm", "Dm2", "alpha"),
+    "A6":  ("Le", "Lm", "Lr", "Be", "Br", "Dm2", "R1r", "R4", "a1", "theta"),
+    "A7":  ("Lm", "Lr", "Be", "Br", "De1", "Dm1", "De2", "Dm2",
+            "R1e", "R0e", "H", "a1", "alpha2"),
+    "A8":  ("Be", "De2", "R1r", "R5", "a1"),
+    "A9":  ("Le", "Lm", "Lr", "Be", "Bm", "De1", "De2", "Dm2",
+            "R0e", "R4", "alpha"),
+    "A10": ("Lm", "Lr", "Dm1", "R1e", "R1m", "R0e", "theta"),
+}
+
+
+class CascadedAttributeModel:
+    """Esqueleto do modelo GMDH em cascata de Dogan (2017).
+
+    Os coeficientes dos neurônios GMDH dependem do material suplementar
+    (Harvard Dataverse doi:10.7910/DVN/MMGAUS). Enquanto esse material não
+    estiver carregado, :meth:`predict` levanta :class:`RuntimeError`.
+
+    Use :attr:`has_coefficients` para verificar disponibilidade antes de
+    chamar :meth:`predict` — desabilite a opção na UI quando for ``False``.
+    """
+
+    def __init__(self, adjective_key: str, coefficients: object = None) -> None:
+        if adjective_key not in ADJECTIVE_SUBSETS:
+            raise ValueError(f"Adjective desconhecido: '{adjective_key}'.")
+        self.adjective = adjective_key
+        self.label: str = ADJECTIVE_LABELS[adjective_key]
+        self.inputs: tuple[str, ...] = ADJECTIVE_SUBSETS[adjective_key]
+        self.coefficients = coefficients
+
+    @property
+    def has_coefficients(self) -> bool:
+        """``True`` quando os coeficientes GMDH estão carregados."""
+        return self.coefficients is not None
+
+    def predict(self, hull_params: Mapping[str, float]) -> float:
+        """Retorna o índice do adjective (> 0,5 → casco expressa o atributo).
+
+        ``hull_params`` deve conter todas as variáveis de :attr:`inputs`.
+
+        Raises:
+            RuntimeError: se os coeficientes não estiverem carregados.
+            KeyError: se alguma variável de :attr:`inputs` faltar em ``hull_params``.
+        """
+        if not self.has_coefficients:
+            raise RuntimeError(
+                f"Coeficientes de '{self.adjective}' ausentes: "
+                "suplementar de Dogan & Gunpinar (2017) não carregado "
+                "(doi:10.7910/DVN/MMGAUS)."
+            )
+        z = dogan_standardize({v: hull_params[v] for v in self.inputs})
+        return self._evaluate(z)
+
+    def is_adjective(self, hull_params: Mapping[str, float]) -> bool:
+        """``True`` se o casco expressar este atributo (limiar estrito 0,5)."""
+        return self.predict(hull_params) > ATTRIBUTE_THRESHOLD
+
+    def _evaluate(self, z: Mapping[str, float]) -> float:
+        # Preencher com as camadas GMDH do suplementar quando disponíveis.
+        raise NotImplementedError(
+            "Estrutura GMDH em cascata depende do suplementar de Dogan (2017)."
+        )
+
+
 @dataclass(frozen=True)
 class HullDesign:
     """Variáveis de projeto do casco (as 11 da Tabela 4.1)."""
