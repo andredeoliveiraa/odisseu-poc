@@ -5,7 +5,8 @@ As variáveis de projeto de Dogan não têm correspondência um-a-um com
 conversão e documenta o que está mapeado com alta confiança, o que depende de
 dados externos e o que não tem campo.
 
-Referência: Dogan & Gunpinar, Ocean Engineering 139 (2017) 309–326.
+Referência: Dogan & Gunpinar, Ocean Engineering 145 (2017) 215–229.
+DOI: 10.1016/j.oceaneng.2017.08.056
 """
 
 from __future__ import annotations
